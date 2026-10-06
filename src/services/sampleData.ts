@@ -75,8 +75,6 @@ export const initialProjectData: ProjectData = {
     },
   ],
 
-  claudeApiKey: '',
-  claudeModel: 'claude-3-5-sonnet-20241022',
 
   videoClips: [
     {

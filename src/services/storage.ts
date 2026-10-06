@@ -138,7 +138,9 @@ export async function restoreMediaUrls(project: ProjectData): Promise<ProjectDat
 }
 
 export function exportProjectAsJSON(project: ProjectData): void {
-  const dataStr = 'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(project, null, 2));
+  // Projects saved by earlier versions may still carry the Claude API key; never write it into a shareable file
+  const json = JSON.stringify(project, (key, value) => (key === 'claudeApiKey' ? undefined : value), 2);
+  const dataStr = 'data:text/json;charset=utf-8,' + encodeURIComponent(json);
   const downloadAnchor = document.createElement('a');
   downloadAnchor.setAttribute('href', dataStr);
   const safeName = project.title.replace(/[/\\?%*:|"<>]/g, '_') || 'sacred_project';

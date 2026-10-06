@@ -69,11 +69,6 @@ export default function App() {
         setProject(cached);
       }
     });
-
-    const cachedKey = localStorage.getItem('sacred_studio_claude_key');
-    if (cachedKey) {
-      setProject((prev) => ({ ...prev, claudeApiKey: cachedKey }));
-    }
   }, []);
 
   // Auto-save project changes to storage with history recording

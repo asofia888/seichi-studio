@@ -1,6 +1,13 @@
 import React, { useState } from 'react';
 import { ProjectData, GlossaryItem, MultilingualSubtitleItem, SupportedLanguage } from '../../types';
-import { translateWithClaude } from '../../services/claudeApi';
+import {
+  translateWithClaude,
+  CLAUDE_MODELS,
+  ClaudeModelId,
+  loadClaudeSettings,
+  saveClaudeApiKey,
+  saveClaudeModel,
+} from '../../services/claudeApi';
 import { downloadSRTFile } from '../../services/srtExporter';
 import {
   Globe,
@@ -25,7 +32,9 @@ export const TranslationPanel: React.FC<TranslationPanelProps> = ({
   project,
   onUpdateProject,
 }) => {
-  const [apiKeyInput, setApiKeyInput] = useState(project.claudeApiKey || '');
+  const [apiKeyInput, setApiKeyInput] = useState(() => loadClaudeSettings().apiKey);
+  const [savedApiKey, setSavedApiKey] = useState(() => loadClaudeSettings().apiKey);
+  const [model, setModel] = useState<ClaudeModelId>(() => loadClaudeSettings().model);
   const [isTranslatingAll, setIsTranslatingAll] = useState(false);
   const [translatingIndex, setTranslatingIndex] = useState<number | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
@@ -34,14 +43,10 @@ export const TranslationPanel: React.FC<TranslationPanelProps> = ({
   const [newJaTerm, setNewJaTerm] = useState('');
   const [newEnTerm, setNewEnTerm] = useState('');
 
-  // Save API Key to project & localStorage
+  // Save API Key to this browser only (kept out of the project file)
   const handleSaveApiKey = () => {
-    localStorage.setItem('sacred_studio_claude_key', apiKeyInput);
-    onUpdateProject({
-      ...project,
-      claudeApiKey: apiKeyInput,
-      updatedAt: new Date().toISOString(),
-    });
+    saveClaudeApiKey(apiKeyInput);
+    setSavedApiKey(apiKeyInput.trim());
     setStatusMessage('Claude APIキーをブラウザ内に保存しました。');
     setTimeout(() => setStatusMessage(null), 3500);
   };
@@ -78,12 +83,7 @@ export const TranslationPanel: React.FC<TranslationPanelProps> = ({
   const handleTranslateSingle = async (sub: MultilingualSubtitleItem, index: number) => {
     setTranslatingIndex(index);
     try {
-      const { en } = await translateWithClaude(
-        sub.text.ja,
-        project.claudeApiKey,
-        project.claudeModel,
-        project.glossary
-      );
+      const en = await translateWithClaude(sub.text.ja, savedApiKey, model, project.glossary);
 
       const updatedSubtitles = project.subtitles.map((s) => {
         if (s.id !== sub.id) return s;
@@ -91,7 +91,7 @@ export const TranslationPanel: React.FC<TranslationPanelProps> = ({
           ...s,
           text: {
             ...s.text,
-            en: en || s.text.en,
+            en,
           },
         };
       });
@@ -112,21 +112,17 @@ export const TranslationPanel: React.FC<TranslationPanelProps> = ({
   const handleTranslateAll = async () => {
     if (project.subtitles.length === 0) return;
     setIsTranslatingAll(true);
-    setStatusMessage('Claude APIで多言語翻訳を実行中...');
+    setStatusMessage('Claude APIで英語に翻訳中...');
 
+    const newSubs = [...project.subtitles];
+    let translatedCount = 0;
     try {
-      const newSubs = [...project.subtitles];
       for (let i = 0; i < newSubs.length; i++) {
         const sub = newSubs[i];
         if (!sub.text.ja) continue;
 
         setTranslatingIndex(i);
-        const { en } = await translateWithClaude(
-          sub.text.ja,
-          project.claudeApiKey,
-          project.claudeModel,
-          project.glossary
-        );
+        const en = await translateWithClaude(sub.text.ja, savedApiKey, model, project.glossary);
 
         newSubs[i] = {
           ...sub,
@@ -135,18 +131,23 @@ export const TranslationPanel: React.FC<TranslationPanelProps> = ({
             en,
           },
         };
+        translatedCount++;
       }
 
-      onUpdateProject({
-        ...project,
-        subtitles: newSubs,
-        updatedAt: new Date().toISOString(),
-      });
       setStatusMessage('すべての解説テロップの英語翻訳が完了しました！');
       setTimeout(() => setStatusMessage(null), 4000);
     } catch (e: any) {
-      alert(`翻訳中にエラーが発生しました: ${e.message}`);
+      setStatusMessage(null);
+      alert(`${translatedCount}行を翻訳したところでエラーが発生しました（翻訳済みの行は反映されます）:\n${e.message}`);
     } finally {
+      // Keep the lines that finished, even if a later line failed
+      if (translatedCount > 0) {
+        onUpdateProject({
+          ...project,
+          subtitles: newSubs,
+          updatedAt: new Date().toISOString(),
+        });
+      }
       setIsTranslatingAll(false);
       setTranslatingIndex(null);
     }
@@ -184,7 +185,7 @@ export const TranslationPanel: React.FC<TranslationPanelProps> = ({
         </div>
 
         <p className="text-[11px] text-[#8A99AD] leading-relaxed">
-          APIキーは外部サーバーへ送信されず、お使いのブラウザLocalStorageにのみ保存されます。
+          APIキーはこのブラウザ内にのみ保存され、翻訳時にAnthropicのAPIへ直接送信されます。プロジェクトの保存ファイル（JSON）には含まれません。
         </p>
 
         <div className="flex items-center space-x-2">
@@ -201,6 +202,28 @@ export const TranslationPanel: React.FC<TranslationPanelProps> = ({
           >
             保存
           </button>
+        </div>
+
+        <div className="flex items-center space-x-2 text-xs">
+          <label htmlFor="claude-model" className="text-[#8A99AD] shrink-0">
+            翻訳モデル:
+          </label>
+          <select
+            id="claude-model"
+            value={model}
+            onChange={(e) => {
+              const next = e.target.value as ClaudeModelId;
+              setModel(next);
+              saveClaudeModel(next);
+            }}
+            className="flex-1 bg-[#1a2331] border border-[#2d3a4e] rounded px-2 py-1.5 text-xs text-white outline-none focus:border-[#D4AF37]"
+          >
+            {CLAUDE_MODELS.map((m) => (
+              <option key={m.id} value={m.id} className="bg-[#151a23]">
+                {m.label}
+              </option>
+            ))}
+          </select>
         </div>
 
         {statusMessage && (

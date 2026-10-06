@@ -23,8 +23,6 @@ export interface ProjectData {
 
   branding: BrandingSettings;
   glossary: GlossaryItem[];
-  claudeApiKey: string;
-  claudeModel: string;
 
   videoClips: VideoClipItem[];
   subtitles: MultilingualSubtitleItem[];
