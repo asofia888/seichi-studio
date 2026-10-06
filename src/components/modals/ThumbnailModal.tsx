@@ -34,6 +34,16 @@ export const ThumbnailModal: React.FC<ThumbnailModalProps> = ({
   const width = isLandscape ? 1280 : 720;
   const height = isLandscape ? 720 : 1280;
 
+  // The photo under the playhead may still be loading when the modal opens; redraw once it is ready
+  const [imageReadyTick, setImageReadyTick] = useState(0);
+  useEffect(() => {
+    if (!isOpen) return;
+    const clip = canvasRenderer.getActiveClip(project, currentTime);
+    if (clip?.type === 'image' && clip.dataUrl) {
+      canvasRenderer.preloadImage(clip.dataUrl).then(() => setImageReadyTick((n) => n + 1)).catch(() => {});
+    }
+  }, [isOpen, project, currentTime]);
+
   // Render thumbnail canvas
   useEffect(() => {
     if (!isOpen || !canvasRef.current) return;
@@ -43,8 +53,13 @@ export const ThumbnailModal: React.FC<ThumbnailModalProps> = ({
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    // 1. Render base video frame at current timestamp
-    canvasRenderer.renderFrame(ctx, project, currentTime, 'ja', false);
+    // 1. Render the video frame at full resolution on its own canvas, then scale it to the thumbnail size
+    //    (rendering straight into this canvas would resize it to 1920x1080 and misplace the overlays)
+    const frame = document.createElement('canvas');
+    const frameCtx = frame.getContext('2d');
+    if (!frameCtx) return;
+    canvasRenderer.renderFrame(frameCtx, project, currentTime, 'ja', false);
+    ctx.drawImage(frame, 0, 0, width, height);
 
     // 2. Add dramatic thumbnail shading (Dark gradient overlay for text legibility)
     const grad = ctx.createLinearGradient(0, height * 0.4, 0, height);
@@ -114,7 +129,7 @@ export const ThumbnailModal: React.FC<ThumbnailModalProps> = ({
       ctx.fillText(subtitle, tx, sy);
       ctx.restore();
     }
-  }, [isOpen, project, currentTime, title, subtitle, badge, fontSize, goldIntensity, isLandscape, width, height]);
+  }, [isOpen, project, currentTime, title, subtitle, badge, fontSize, goldIntensity, isLandscape, width, height, imageReadyTick]);
 
   if (!isOpen) return null;
 

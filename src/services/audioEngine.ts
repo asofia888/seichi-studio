@@ -5,11 +5,20 @@
  */
 import { AudioTrackItem } from '../types';
 
+/** Whether a narration with a sound file is playing at `time` and its track is not muted */
+export function isNarrationAudibleAt(
+  audioTracks: AudioTrackItem[],
+  time: number,
+  mutedTracks?: { narration?: boolean }
+): boolean {
+  if (mutedTracks?.narration) return false;
+  return audioTracks.some(
+    (t) => t.type === 'narration' && !!t.dataUrl && time >= t.startTime && time < t.startTime + t.duration
+  );
+}
+
 class AudioEngine {
   private ctx: AudioContext | null = null;
-  private bgmGain: GainNode | null = null;
-  private ambienceGain: GainNode | null = null;
-  private narrationGain: GainNode | null = null;
   private masterGain: GainNode | null = null;
 
   // Active audio elements for playback
@@ -30,15 +39,6 @@ class AudioEngine {
       this.masterGain = this.ctx.createGain();
       this.masterGain.gain.value = 1.0;
       this.masterGain.connect(this.ctx.destination);
-
-      this.bgmGain = this.ctx.createGain();
-      this.bgmGain.connect(this.masterGain);
-
-      this.ambienceGain = this.ctx.createGain();
-      this.ambienceGain.connect(this.masterGain);
-
-      this.narrationGain = this.ctx.createGain();
-      this.narrationGain.connect(this.masterGain);
     }
     if (this.ctx.state === 'suspended') {
       this.ctx.resume();
@@ -56,26 +56,8 @@ class AudioEngine {
   ) {
     this.init();
 
-    // Check if narration is currently active at this timestamp
-    const isNarrationActive = audioTracks.some(
-      (t) =>
-        t.type === 'narration' &&
-        currentTime >= t.startTime &&
-        currentTime < t.startTime + t.duration
-    );
-
-    // Apply auto ducking to BGM
-    const bgmTrack = audioTracks.find((t) => t.type === 'bgm');
-    const isBgmMuted = mutedTracks?.bgm === true;
-    if (this.bgmGain && this.ctx) {
-      const baseVol = isBgmMuted ? 0 : (bgmTrack ? bgmTrack.volume : 0.6);
-      let targetBgmVol = baseVol;
-      if (isNarrationActive && bgmTrack?.autoDucking?.enabled !== false && !isBgmMuted) {
-        const duckVal = bgmTrack?.autoDucking?.duckVolume ?? 0.2;
-        targetBgmVol = baseVol * duckVal;
-      }
-      this.bgmGain.gain.setTargetAtTime(targetBgmVol, this.ctx.currentTime, 0.15);
-    }
+    // Narration actually being heard right now (same rule as the export): BGM ducks only under audible speech
+    const isNarrationActive = isNarrationAudibleAt(audioTracks, currentTime, mutedTracks);
 
     // Manage each track's HTMLAudioElement
     for (const track of audioTracks) {
@@ -116,7 +98,8 @@ class AudioEngine {
 
         // Set volume with ducking and fade consideration
         if (track.type === 'bgm') {
-          const duckVal = isNarrationActive ? (track.autoDucking?.duckVolume ?? 0.22) : 1.0;
+          const isDucking = isNarrationActive && track.autoDucking?.enabled !== false;
+          const duckVal = isDucking ? (track.autoDucking?.duckVolume ?? 0.22) : 1.0;
           el.volume = Math.max(0, Math.min(1, track.volume * duckVal * fadeMultiplier));
         } else {
           el.volume = Math.max(0, Math.min(1, track.volume * fadeMultiplier));

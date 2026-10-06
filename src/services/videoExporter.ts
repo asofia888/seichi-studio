@@ -331,7 +331,7 @@ class VideoFrameProvider {
 function collectProjectText(project: ProjectData, lang: SupportedLanguage): string {
   const parts: string[] = [
     '⛩️📍【】御祭神ご利益所在地最寄り駅駐車場参拝時間アクセス案内作法心得神域の静寂 - Sanctuary Stillness',
-    'DeityBlessingEnshrinedAddressTransitParkingHours0123456789°NE.,:-',
+    'DeityBlessingEnshrinedAddressTransitParkingHoursAccesto0123456789°NE.,:-…',
   ];
   const b = project.branding;
   for (const t of [b.opTitle, b.opSubtitle, b.edTitle, b.edSubtitle]) parts.push(t.ja, t[lang]);
@@ -396,6 +396,13 @@ export async function exportProjectVideo(
     if (clip.type === 'image' && clip.dataUrl) {
       await canvasRenderer.preloadImage(clip.dataUrl).catch(() => {
         warnings.push(`写真「${clip.name}」を読み込めなかったため、背景のみで書き出しました。`);
+      });
+    }
+  }
+  for (const card of project.accessCards) {
+    if (card.mapMode === 'custom_image' && card.customMapDataUrl) {
+      await canvasRenderer.preloadImage(card.customMapDataUrl).catch(() => {
+        warnings.push('アクセスカードの地図画像を読み込めなかったため、簡易地図で書き出しました。');
       });
     }
   }

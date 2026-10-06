@@ -11,6 +11,31 @@ import {
   Film,
 } from 'lucide-react';
 
+/** Length of a video in seconds, or null if the browser cannot read it */
+function readVideoDuration(url: string): Promise<number | null> {
+  return new Promise((resolve) => {
+    const video = document.createElement('video');
+    let settled = false;
+    const finish = (d: number) => {
+      if (settled) return;
+      settled = true;
+      resolve(Number.isFinite(d) && d > 0 ? Math.round(d * 100) / 100 : null);
+    };
+    video.preload = 'metadata';
+    video.onloadedmetadata = () => {
+      if (video.duration !== Infinity) return finish(video.duration);
+      // WebM files recorded in a browser carry no duration; seeking to the end makes the browser work it out
+      video.ondurationchange = () => {
+        if (Number.isFinite(video.duration)) finish(video.duration);
+      };
+      video.currentTime = Number.MAX_SAFE_INTEGER;
+      setTimeout(() => finish(NaN), 5000);
+    };
+    video.onerror = () => finish(NaN);
+    video.src = url;
+  });
+}
+
 interface MediaPanelProps {
   project: ProjectData;
   onUpdateProject: (p: ProjectData) => void;
@@ -44,6 +69,8 @@ export const MediaPanel: React.FC<MediaPanelProps> = ({
       const blobKey = `blob_${Date.now()}_${i}`;
       await saveMediaBlob(blobKey, file);
       const url = URL.createObjectURL(file);
+      // Videos use their real length (10s if it cannot be read); photos show for 8s
+      const clipDuration = isVideo ? (await readVideoDuration(url)) ?? 10 : 8;
 
       newClips.push({
         id: `clip_${Date.now()}_${i}`,
@@ -52,9 +79,9 @@ export const MediaPanel: React.FC<MediaPanelProps> = ({
         dataUrl: url,
         blobKey,
         startTime: curStartTime,
-        duration: isVideo ? 10 : 8,
+        duration: clipDuration,
         trimStart: 0,
-        trimEnd: isVideo ? 10 : 8,
+        trimEnd: clipDuration,
         kenBurns: !isVideo
           ? {
               enabled: true,
@@ -66,7 +93,7 @@ export const MediaPanel: React.FC<MediaPanelProps> = ({
           : undefined,
       });
 
-      curStartTime += isVideo ? 10 : 8;
+      curStartTime += clipDuration;
     }
 
     const updatedClips = [...project.videoClips, ...newClips];

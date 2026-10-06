@@ -17,27 +17,97 @@ export interface ExportRenderOptions {
   videoFrame: { image: CanvasImageSource; width: number; height: number } | null;
 }
 
+// Japanese characters that must not begin a line (kinsoku): they stay at the end of the previous line
+const NO_LINE_START = '、。，．,.・：；？！!?ー～」』）】〕〉》ゝゞぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮヵヶ';
+
 export class CanvasRenderer {
   private imageCache: Map<string, HTMLImageElement> = new Map();
   private videoCache: Map<string, HTMLVideoElement> = new Map();
 
   /**
-   * Preload an image URL into cache
+   * Load an image into the cache and wait until it can be drawn
    */
   public async preloadImage(url: string): Promise<HTMLImageElement> {
-    if (this.imageCache.has(url)) {
-      return this.imageCache.get(url)!;
-    }
-    return new Promise((resolve, reject) => {
-      const img = new Image();
-      img.crossOrigin = 'anonymous';
-      img.onload = () => {
-        this.imageCache.set(url, img);
-        resolve(img);
-      };
-      img.onerror = () => reject(new Error(`Failed to load image: ${url}`));
+    let img = this.imageCache.get(url);
+    if (!img) {
+      img = new Image();
       img.src = url;
-    });
+      this.imageCache.set(url, img);
+    }
+    await img.decode(); // rejects if the image is broken
+    return img;
+  }
+
+  /** Cached image for a URL: starts loading on first use and returns null until it is ready */
+  private getLoadedImage(url: string): HTMLImageElement | null {
+    let img = this.imageCache.get(url);
+    if (!img) {
+      img = new Image();
+      img.src = url;
+      this.imageCache.set(url, img);
+    }
+    return img.complete && img.naturalWidth > 0 ? img : null;
+  }
+
+  /**
+   * Break text into lines no wider than maxWidth in the current ctx.font.
+   * Latin text breaks at spaces; Japanese may break between any characters (except before
+   * closing punctuation). Text beyond maxLines is cut off with an ellipsis.
+   */
+  private wrapText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number, maxLines: number): string[] {
+    const fits = (s: string) => ctx.measureText(s).width <= maxWidth;
+    // Latin words (with their trailing space) stay whole; every other character is its own token
+    const tokens = (text.match(/[^\s　-鿿＀-￯]+\s*|\s+|[\s\S]/gu) || [])
+      .flatMap((t) => (fits(t.trimEnd()) ? [t] : Array.from(t))); // a word wider than a line is split anyway
+
+    const lines: string[] = [];
+    let line = '';
+    for (const token of tokens) {
+      if (token.includes('\n')) {
+        lines.push(line.trimEnd());
+        line = '';
+        continue;
+      }
+      const candidate = line + token;
+      if (line.trim() && !fits(candidate.trimEnd()) && !NO_LINE_START.includes(token[0])) {
+        lines.push(line.trimEnd());
+        line = token.trimStart();
+      } else {
+        line = candidate;
+      }
+    }
+    if (line.trim()) lines.push(line.trimEnd());
+
+    if (lines.length <= maxLines) return lines;
+    const kept = lines.slice(0, maxLines);
+    let last = Array.from(kept[maxLines - 1]);
+    while (last.length > 0 && !fits(last.join('') + '…')) last.pop();
+    kept[maxLines - 1] = last.join('') + '…';
+    return kept;
+  }
+
+  /**
+   * Draw one line of text, shrinking the font (down to minSize) so it fits maxWidth,
+   * then cutting it off with an ellipsis if it still does not fit.
+   * `font` is a CSS font string with "{size}" where the pixel size goes.
+   */
+  private drawFittedText(
+    ctx: CanvasRenderingContext2D,
+    text: string,
+    x: number,
+    y: number,
+    maxWidth: number,
+    font: string,
+    size: number,
+    minSize: number
+  ) {
+    let px = size;
+    ctx.font = font.replace('{size}', String(px));
+    while (px > minSize && ctx.measureText(text).width > maxWidth) {
+      px -= 1;
+      ctx.font = font.replace('{size}', String(px));
+    }
+    ctx.fillText(this.wrapText(ctx, text, maxWidth, 1)[0] ?? '', x, y);
   }
 
   /**
@@ -170,26 +240,22 @@ export class CanvasRenderer {
     const progress = Math.min(1, Math.max(0, elapsed / (clip.duration || 1)));
 
     if (clip.type === 'image' && clip.dataUrl) {
-      let img = this.imageCache.get(clip.dataUrl);
-      if (!img) {
-        img = new Image();
-        img.src = clip.dataUrl;
-        this.imageCache.set(clip.dataUrl, img);
-      }
+      const img = this.getLoadedImage(clip.dataUrl);
 
-      if (img.complete && img.naturalWidth > 0) {
+      if (img) {
         ctx.save();
 
-        // Ken Burns effect calculation
+        // Ken Burns effect calculation (switched off: the photo stays still)
         const kb = clip.kenBurns || { enabled: true, scaleStart: 1.0, scaleEnd: 1.15, panX: 3, panY: 2 };
+        const motion = kb.enabled === false ? null : kb;
         const ease = this.easeInOutQuad(progress);
-        const scale = kb.scaleStart + (kb.scaleEnd - kb.scaleStart) * ease;
-        const panX = ((kb.panX * ease) / 100) * W;
-        const panY = ((kb.panY * ease) / 100) * H;
+        const scale = motion ? motion.scaleStart + (motion.scaleEnd - motion.scaleStart) * ease : 1;
+        const panX = motion ? ((motion.panX * ease) / 100) * W : 0;
+        const panY = motion ? ((motion.panY * ease) / 100) * H : 0;
 
         // Custom focal target shift (if focal point is specified)
-        const focusShiftX = kb.focusPoint ? (0.5 - kb.focusPoint.x) * (scale - 1) * W * 0.8 : 0;
-        const focusShiftY = kb.focusPoint ? (0.5 - kb.focusPoint.y) * (scale - 1) * H * 0.8 : 0;
+        const focusShiftX = motion?.focusPoint ? (0.5 - motion.focusPoint.x) * (scale - 1) * W * 0.8 : 0;
+        const focusShiftY = motion?.focusPoint ? (0.5 - motion.focusPoint.y) * (scale - 1) * H * 0.8 : 0;
 
         ctx.translate(W / 2 + panX + focusShiftX, H / 2 + panY + focusShiftY);
         ctx.scale(scale, scale);
@@ -368,16 +434,15 @@ export class CanvasRenderer {
       ctx.fillRect(x + 28, y + 26, 6, 42);
 
       // Title (Shrine Name)
+      const textRight = x + cardW - 30;
       ctx.fillStyle = '#FFFFFF';
-      ctx.font = `bold 42px 'Shippori Mincho', 'Noto Serif JP', serif`;
       ctx.textAlign = 'left';
-      ctx.fillText(name, x + 46, y + 62);
+      this.drawFittedText(ctx, name, x + 46, y + 62, textRight - (x + 46), `bold {size}px 'Shippori Mincho', 'Noto Serif JP', serif`, 42, 28);
 
       // Location
       if (location) {
         ctx.fillStyle = '#D4AF37';
-        ctx.font = `500 20px 'Noto Serif JP', serif`;
-        ctx.fillText(`📍 ${location}`, x + 46, y + 104);
+        this.drawFittedText(ctx, `📍 ${location}`, x + 46, y + 104, textRight - (x + 46), `500 {size}px 'Noto Serif JP', serif`, 20, 15);
       }
 
       // Divider
@@ -387,24 +452,29 @@ export class CanvasRenderer {
       ctx.lineTo(x + cardW - 30, y + 124);
       ctx.stroke();
 
+      // Labels and values; values start after the widest label so English labels never overlap them
+      const labelFont = `600 18px 'Noto Serif JP', serif`;
+      const deityLabel = lang === 'ja' ? '【御祭神】' : '【Deity】';
+      const blessingLabel = lang === 'ja' ? '【ご利益】' : '【Blessing】';
+      ctx.font = labelFont;
+      const valueX = x + 30 + Math.max(100, Math.max(ctx.measureText(deityLabel).width, ctx.measureText(blessingLabel).width) + 12);
+
       // Deity (御祭神)
       if (deity) {
         ctx.fillStyle = 'rgba(247, 246, 242, 0.7)';
-        ctx.font = `600 18px 'Noto Serif JP', serif`;
-        ctx.fillText(lang === 'ja' ? '【御祭神】' : '【Deity】', x + 30, y + 162);
+        ctx.font = labelFont;
+        ctx.fillText(deityLabel, x + 30, y + 162);
         ctx.fillStyle = '#F7F6F2';
-        ctx.font = `500 21px 'Shippori Mincho', serif`;
-        ctx.fillText(deity, x + 130, y + 162);
+        this.drawFittedText(ctx, deity, valueX, y + 162, textRight - valueX, `500 {size}px 'Shippori Mincho', serif`, 21, 15);
       }
 
       // Blessings (ご利益)
       if (blessing) {
         ctx.fillStyle = 'rgba(247, 246, 242, 0.7)';
-        ctx.font = `600 18px 'Noto Serif JP', serif`;
-        ctx.fillText(lang === 'ja' ? '【ご利益】' : '【Blessing】', x + 30, y + 208);
+        ctx.font = labelFont;
+        ctx.fillText(blessingLabel, x + 30, y + 208);
         ctx.fillStyle = '#E8D595';
-        ctx.font = `500 20px 'Shippori Mincho', serif`;
-        ctx.fillText(blessing, x + 130, y + 208);
+        this.drawFittedText(ctx, blessing, valueX, y + 208, textRight - valueX, `500 {size}px 'Shippori Mincho', serif`, 20, 15);
       }
     } else {
       // 9:16 Shorts Card: Centered compact shrine badge
@@ -422,15 +492,14 @@ export class CanvasRenderer {
       ctx.lineWidth = 3;
       ctx.stroke();
 
+      const textW = cardW - 60;
       ctx.fillStyle = '#FFFFFF';
-      ctx.font = `bold 44px 'Shippori Mincho', serif`;
       ctx.textAlign = 'center';
-      ctx.fillText(name, W / 2, y + 70);
+      this.drawFittedText(ctx, name, W / 2, y + 70, textW, `bold {size}px 'Shippori Mincho', serif`, 44, 28);
 
       if (location) {
         ctx.fillStyle = '#D4AF37';
-        ctx.font = `500 24px 'Noto Serif JP', serif`;
-        ctx.fillText(`📍 ${location}`, W / 2, y + 115);
+        this.drawFittedText(ctx, `📍 ${location}`, W / 2, y + 115, textW, `500 {size}px 'Noto Serif JP', serif`, 24, 17);
       }
 
       if (deity) {
@@ -438,14 +507,12 @@ export class CanvasRenderer {
         ctx.font = `600 20px 'Noto Serif JP', serif`;
         ctx.fillText(lang === 'ja' ? '御祭神' : 'Enshrined Deity', W / 2, y + 175);
         ctx.fillStyle = '#F7F6F2';
-        ctx.font = `500 26px 'Shippori Mincho', serif`;
-        ctx.fillText(deity, W / 2, y + 215);
+        this.drawFittedText(ctx, deity, W / 2, y + 215, textW, `500 {size}px 'Shippori Mincho', serif`, 26, 18);
       }
 
       if (blessing) {
         ctx.fillStyle = '#E8D595';
-        ctx.font = `500 22px 'Noto Serif JP', serif`;
-        ctx.fillText(blessing, W / 2, y + 285);
+        this.drawFittedText(ctx, blessing, W / 2, y + 285, textW, `500 {size}px 'Noto Serif JP', serif`, 22, 16);
       }
     }
 
@@ -472,11 +539,15 @@ export class CanvasRenderer {
     ctx.font = `600 ${fontSize}px 'Shippori Mincho', 'Noto Serif JP', serif`;
     ctx.textAlign = 'center';
 
-    const textWidth = ctx.measureText(text).width;
+    // Long lines (English translations especially) wrap; the banner grows upward from a fixed bottom edge
     const paddingX = 40;
+    const lines = this.wrapText(ctx, text, W - 80 - paddingX * 2, isLandscape ? 3 : 4);
+    const lineHeight = Math.round(fontSize * 1.35);
+    const textWidth = Math.max(...lines.map((l) => ctx.measureText(l).width));
     const bannerW = Math.min(W - 80, textWidth + paddingX * 2);
-    const bannerH = fontSize + 40;
-    const bannerY = isLandscape ? H - 160 : H - 240;
+    const bannerH = fontSize + 40 + (lines.length - 1) * lineHeight;
+    const bannerBottom = isLandscape ? H - 82 : H - 166;
+    const bannerY = bannerBottom - bannerH;
     const bannerX = (W - bannerW) / 2;
 
     // Background bar
@@ -497,14 +568,16 @@ export class CanvasRenderer {
     ctx.shadowColor = 'rgba(0, 0, 0, 0.9)';
     ctx.shadowBlur = 8;
     ctx.fillStyle = '#FFFFFF';
-    ctx.fillText(text, W / 2, bannerY + bannerH / 2 + fontSize * 0.35);
+    lines.forEach((l, i) => {
+      ctx.fillText(l, W / 2, bannerY + 20 + fontSize * 0.85 + i * lineHeight);
+    });
 
     // If English is selected and different from Japanese, optionally show small Japanese subtitle above
     if (lang !== 'ja' && sub.text.ja && sub.text.ja !== text) {
       ctx.shadowBlur = 4;
       ctx.fillStyle = 'rgba(212, 175, 55, 0.85)';
-      ctx.font = `400 ${fontSize * 0.55}px 'Noto Serif JP', serif`;
-      ctx.fillText(sub.text.ja, W / 2, bannerY - 12);
+      const jaSize = Math.round(fontSize * 0.55);
+      this.drawFittedText(ctx, sub.text.ja, W / 2, bannerY - 12, W - 80, `400 {size}px 'Noto Serif JP', serif`, jaSize, 14);
     }
 
     ctx.restore();
@@ -527,9 +600,16 @@ export class CanvasRenderer {
     const detail = sub.etiquetteTip?.detail[lang] || sub.text[lang] || sub.text.ja;
 
     const cardW = isLandscape ? 520 : W - 80;
-    const cardH = isLandscape ? 140 : 150;
     const x = isLandscape ? W - cardW - 70 : 40;
     const y = isLandscape ? 80 : 130;
+
+    // Detail text wraps (up to 3 lines) and the card grows to fit it
+    const detailSize = isLandscape ? 22 : 20;
+    const detailFont = `600 ${detailSize}px 'Shippori Mincho', serif`;
+    ctx.font = detailFont;
+    const detailLines = this.wrapText(ctx, detail, cardW - 48, 3);
+    const lineHeight = Math.round(detailSize * 1.45);
+    const cardH = Math.max(isLandscape ? 140 : 150, 84 + (detailLines.length - 1) * lineHeight + 34);
 
     // Vermilion and Gold shrine scroll banner
     ctx.fillStyle = 'rgba(18, 14, 12, 0.92)';
@@ -541,22 +621,25 @@ export class CanvasRenderer {
     ctx.lineWidth = 2.5;
     ctx.stroke();
 
-    // Header badge
+    // Header badge sized to its title
+    const badgeFont = `bold {size}px 'Noto Serif JP', serif`;
+    const badgeText = '⛩️ ' + title;
+    ctx.font = badgeFont.replace('{size}', '16');
+    const badgeW = Math.min(cardW - 40, Math.max(isLandscape ? 160 : 180, ctx.measureText(badgeText).width + 28));
     ctx.fillStyle = '#C84B31';
     ctx.beginPath();
-    ctx.roundRect(x + 20, y + 16, isLandscape ? 160 : 180, 32, 4);
+    ctx.roundRect(x + 20, y + 16, badgeW, 32, 4);
     ctx.fill();
 
     ctx.fillStyle = '#FFFFFF';
-    ctx.font = `bold 16px 'Noto Serif JP', serif`;
     ctx.textAlign = 'center';
-    ctx.fillText('⛩️ ' + title, x + 20 + (isLandscape ? 80 : 90), y + 38);
+    this.drawFittedText(ctx, badgeText, x + 20 + badgeW / 2, y + 38, badgeW - 16, badgeFont, 16, 12);
 
     // Detail text
     ctx.fillStyle = '#F7F6F2';
-    ctx.font = `600 ${isLandscape ? 22 : 20}px 'Shippori Mincho', serif`;
+    ctx.font = detailFont;
     ctx.textAlign = 'left';
-    ctx.fillText(detail, x + 24, y + 84);
+    detailLines.forEach((l, i) => ctx.fillText(l, x + 24, y + 84 + i * lineHeight));
 
     ctx.restore();
   }
@@ -603,9 +686,9 @@ export class CanvasRenderer {
     // Title
     const title = card.sanctuaryName[lang] || card.sanctuaryName.ja;
     ctx.fillStyle = '#FFFFFF';
-    ctx.font = `bold ${isLandscape ? 40 : 36}px 'Shippori Mincho', serif`;
     ctx.textAlign = 'center';
-    ctx.fillText(`⛩️ ${title} 参拝アクセス案内`, W / 2, cardY + 65);
+    const heading = lang === 'ja' ? `⛩️ ${title} 参拝アクセス案内` : `⛩️ Access to ${title}`;
+    this.drawFittedText(ctx, heading, W / 2, cardY + 65, cardW - 60, `bold {size}px 'Shippori Mincho', serif`, isLandscape ? 40 : 36, 24);
 
     // Map container dimension
     const mapW = isLandscape ? 560 : cardW - 60;
@@ -613,10 +696,16 @@ export class CanvasRenderer {
     const mapX = isLandscape ? cardX + 50 : cardX + 30;
     const mapY = cardY + 110;
 
-    // Draw Map (custom map image or dynamic Leaflet canvas grab)
-    if (card.customMapDataUrl && this.imageCache.has(card.customMapDataUrl)) {
-      const mapImg = this.imageCache.get(card.customMapDataUrl)!;
-      ctx.drawImage(mapImg, mapX, mapY, mapW, mapH);
+    // Draw Map (uploaded map image, cropped to fill the frame without stretching, or the stylized map)
+    const mapImg = card.mapMode === 'custom_image' && card.customMapDataUrl ? this.getLoadedImage(card.customMapDataUrl) : null;
+    if (mapImg) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(mapX, mapY, mapW, mapH);
+      ctx.clip();
+      ctx.translate(mapX, mapY);
+      this.drawCover(ctx, mapImg, mapImg.naturalWidth, mapImg.naturalHeight, mapW, mapH);
+      ctx.restore();
     } else {
       // Draw atmospheric stylized OpenStreetMap proxy tile with pin
       this.renderStylizedMapProxy(ctx, mapX, mapY, mapW, mapH, card.latLng);
@@ -631,7 +720,7 @@ export class CanvasRenderer {
     // Access Information details
     const infoX = isLandscape ? cardX + 650 : cardX + 30;
     let infoY = isLandscape ? cardY + 140 : mapY + mapH + 60;
-    const lineSpacing = isLandscape ? 68 : 56;
+    const lineSpacing = isLandscape ? 68 : 80; // room for a value that wraps onto a second line
 
     const items = [
       { label: lang === 'ja' ? '【所在地】' : '【Address】', val: card.address[lang] || card.address.ja },
@@ -641,14 +730,20 @@ export class CanvasRenderer {
     ];
 
     ctx.textAlign = 'left';
+    const labelFont = `600 20px 'Noto Serif JP', serif`;
+    const valueFont = `500 22px 'Shippori Mincho', serif`;
+    ctx.font = labelFont;
+    const valueX = infoX + Math.max(...items.map((item) => ctx.measureText(item.label).width)) + 16;
+    const valueMaxW = cardX + cardW - 40 - valueX;
     for (const item of items) {
       ctx.fillStyle = '#D4AF37';
-      ctx.font = `600 20px 'Noto Serif JP', serif`;
+      ctx.font = labelFont;
       ctx.fillText(item.label, infoX, infoY);
 
+      // Long addresses wrap onto a second line
       ctx.fillStyle = '#F7F6F2';
-      ctx.font = `500 22px 'Shippori Mincho', serif`;
-      ctx.fillText(item.val || '-', infoX + 160, infoY);
+      ctx.font = valueFont;
+      this.wrapText(ctx, item.val || '-', valueMaxW, 2).forEach((l, i) => ctx.fillText(l, valueX, infoY + i * 28));
 
       infoY += lineSpacing;
     }
@@ -759,14 +854,12 @@ export class CanvasRenderer {
     // Channel Name / Series Title
     const title = project.branding.opTitle[lang] || project.branding.opTitle.ja;
     ctx.fillStyle = '#F7F6F2';
-    ctx.font = `bold ${W > H ? 46 : 42}px 'Shippori Mincho', serif`;
-    ctx.fillText(title, W / 2, H / 2 + 30);
+    this.drawFittedText(ctx, title, W / 2, H / 2 + 30, W - 160, `bold {size}px 'Shippori Mincho', serif`, W > H ? 46 : 42, 26);
 
     // Subtitle
     const sub = project.branding.opSubtitle[lang] || project.branding.opSubtitle.ja;
     ctx.fillStyle = '#D4AF37';
-    ctx.font = `500 ${W > H ? 24 : 22}px 'Noto Serif JP', serif`;
-    ctx.fillText(sub, W / 2, H / 2 + 84);
+    this.drawFittedText(ctx, sub, W / 2, H / 2 + 84, W - 160, `500 {size}px 'Noto Serif JP', serif`, W > H ? 24 : 22, 16);
 
     ctx.restore();
   }
@@ -798,13 +891,11 @@ export class CanvasRenderer {
 
     const title = project.branding.edTitle[lang] || project.branding.edTitle.ja;
     ctx.fillStyle = '#F7F6F2';
-    ctx.font = `bold ${W > H ? 38 : 34}px 'Shippori Mincho', serif`;
-    ctx.fillText(title, W / 2, H / 2 - 10);
+    this.drawFittedText(ctx, title, W / 2, H / 2 - 10, W - 160, `bold {size}px 'Shippori Mincho', serif`, W > H ? 38 : 34, 22);
 
     const sub = project.branding.edSubtitle[lang] || project.branding.edSubtitle.ja;
     ctx.fillStyle = 'rgba(247, 246, 242, 0.7)';
-    ctx.font = `500 ${W > H ? 22 : 20}px 'Noto Serif JP', serif`;
-    ctx.fillText(sub, W / 2, H / 2 + 50);
+    this.drawFittedText(ctx, sub, W / 2, H / 2 + 50, W - 160, `500 {size}px 'Noto Serif JP', serif`, W > H ? 22 : 20, 15);
 
     ctx.restore();
   }

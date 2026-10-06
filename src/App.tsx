@@ -8,6 +8,7 @@ import { ProjectData, SupportedLanguage } from './types';
 import { initialProjectData } from './services/sampleData';
 import { loadLastProject, saveProjectToStorage, saveMediaBlob } from './services/storage';
 import { audioEngine } from './services/audioEngine';
+import { splitItemAtTime } from './services/timelineEdit';
 
 import { Header } from './components/Header';
 import { VideoPreview } from './components/VideoPreview';
@@ -48,6 +49,13 @@ export default function App() {
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
   const [selectedSubId, setSelectedSubId] = useState<string | null>(null);
   const [selectedAudioId, setSelectedAudioId] = useState<string | null>(null);
+
+  // Only one item is selected at a time, so Delete and S always act on the highlighted item
+  const selectItem = (kind: 'clip' | 'subtitle' | 'audio', id: string | null) => {
+    setSelectedClipId(kind === 'clip' ? id : null);
+    setSelectedSubId(kind === 'subtitle' ? id : null);
+    setSelectedAudioId(kind === 'audio' ? id : null);
+  };
 
   // Microphone recording state
   const [isRecordingMic, setIsRecordingMic] = useState<boolean>(false);
@@ -136,7 +144,14 @@ export default function App() {
   const keyDownHandlerRef = useRef<(e: KeyboardEvent) => void>(() => {});
   useEffect(() => {
     keyDownHandlerRef.current = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+      // Typing in a form field or changing a dropdown must not trigger shortcuts
+      const target = e.target as HTMLElement | null;
+      if (
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLSelectElement ||
+        target?.isContentEditable
+      ) {
         return;
       }
       if (e.code === 'Space') {
@@ -162,6 +177,9 @@ export default function App() {
       } else if (e.code === 'KeyR' && !e.ctrlKey && !e.metaKey) {
         e.preventDefault();
         handleToggleRecordMic();
+      } else if (e.code === 'KeyS' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        handleSplitAtPlayhead();
       } else if (e.key === '?' || (e.shiftKey && e.key === '/')) {
         e.preventDefault();
         setIsShortcutsOpen((prev) => !prev);
@@ -208,6 +226,21 @@ export default function App() {
     window.addEventListener('keydown', listener);
     return () => window.removeEventListener('keydown', listener);
   }, []);
+
+  // Split the selected clip / telop / audio clip at the playhead (timeline button and the S key)
+  const handleSplitAtPlayhead = () => {
+    const selectedId = selectedAudioId || selectedSubId || selectedClipId;
+    if (!selectedId) {
+      alert('分割するアイテム（動画クリップ、字幕、音声トラック）をタイムライン上で選択してください。');
+      return;
+    }
+    const updated = splitItemAtTime(project, selectedId, currentTime);
+    if (!updated) {
+      alert('選択中のアイテムが現在の再生位置（赤線）と交差していないか、端に近すぎるため分割できません。');
+      return;
+    }
+    handleUpdateProject(updated);
+  };
 
   // Microphone recording toggle
   const handleToggleRecordMic = async () => {
@@ -264,15 +297,16 @@ export default function App() {
 
   const handleSelectTrackItem = (type: string, id: string) => {
     if (type === 'clip') {
-      setSelectedClipId(id);
+      selectItem('clip', id);
       setActiveTab('media');
     } else if (type === 'subtitle') {
-      setSelectedSubId(id);
+      selectItem('subtitle', id);
       setActiveTab('telop');
     } else if (type === 'access') {
+      selectItem('clip', null); // access cards are not deletable/splittable from the keyboard
       setActiveTab('access');
     } else if (type === 'audio') {
-      setSelectedAudioId(id);
+      selectItem('audio', id);
       setActiveTab('audio');
     }
   };
@@ -386,7 +420,7 @@ export default function App() {
                 project={project}
                 onUpdateProject={handleUpdateProject}
                 selectedClipId={selectedClipId}
-                onSelectClip={setSelectedClipId}
+                onSelectClip={(id) => selectItem('clip', id)}
               />
             )}
             {activeTab === 'telop' && (
@@ -394,7 +428,7 @@ export default function App() {
                 project={project}
                 onUpdateProject={handleUpdateProject}
                 selectedSubId={selectedSubId}
-                onSelectSubtitle={setSelectedSubId}
+                onSelectSubtitle={(id) => selectItem('subtitle', id)}
                 currentTime={currentTime}
               />
             )}
@@ -420,7 +454,7 @@ export default function App() {
                 isRecordingMic={isRecordingMic}
                 onToggleRecordMic={handleToggleRecordMic}
                 selectedAudioId={selectedAudioId}
-                onSelectAudio={setSelectedAudioId}
+                onSelectAudio={(id) => selectItem('audio', id)}
               />
             )}
             {activeTab === 'chapters' && (
@@ -454,6 +488,7 @@ export default function App() {
 
       {/* Bottom: Multi-Track Timeline */}
       <Timeline
+        onSplitAtPlayhead={handleSplitAtPlayhead}
         project={project}
         onUpdateProject={handleUpdateProject}
         currentTime={currentTime}

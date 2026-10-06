@@ -1,6 +1,7 @@
 import React, { useRef, useState, useEffect } from 'react';
-import { ProjectData, VideoClipItem, MultilingualSubtitleItem, AudioTrackItem } from '../types';
+import { ProjectData } from '../types';
 import { WaveformVisualizer } from './WaveformVisualizer';
+import { isNarrationAudibleAt } from '../services/audioEngine';
 import {
   Film,
   Type,
@@ -300,108 +301,6 @@ export const Timeline: React.FC<TimelineProps> = ({
     };
   }, [dragState, ghostPreview, duration, project, snapEnabled]);
 
-  // Split selected clip at current playhead position
-  const handleSplitCurrent = () => {
-    if (!selectedItemId) {
-      alert('分割するアイテム（動画クリップ、字幕、音声トラック）をタイムライン上で選択してください。');
-      return;
-    }
-
-    // 1. Try Video Clip
-    const targetClip = project.videoClips.find(
-      (c) => c.id === selectedItemId && currentTime > c.startTime + 0.3 && currentTime < c.startTime + c.duration - 0.3
-    );
-    if (targetClip) {
-      const splitPoint = currentTime;
-      const firstDuration = splitPoint - targetClip.startTime;
-      const secondDuration = targetClip.duration - firstDuration;
-
-      const clipA: VideoClipItem = {
-        ...targetClip,
-        duration: Math.round(firstDuration * 100) / 100,
-      };
-
-      const clipB: VideoClipItem = {
-        ...targetClip,
-        id: `clip_${Date.now()}_b`,
-        name: `${targetClip.name} (分割)`,
-        startTime: Math.round(splitPoint * 100) / 100,
-        duration: Math.round(secondDuration * 100) / 100,
-        trimStart: (targetClip.trimStart || 0) + firstDuration,
-      };
-
-      const updatedClips = project.videoClips.flatMap((c) => (c.id === targetClip.id ? [clipA, clipB] : [c]));
-      onUpdateProject({
-        ...project,
-        videoClips: updatedClips,
-        updatedAt: new Date().toISOString(),
-      });
-      return;
-    }
-
-    // 2. Try Subtitle
-    const targetSub = project.subtitles.find(
-      (s) => s.id === selectedItemId && currentTime > s.startTime + 0.3 && currentTime < s.startTime + s.duration - 0.3
-    );
-    if (targetSub) {
-      const firstDuration = currentTime - targetSub.startTime;
-      const secondDuration = targetSub.duration - firstDuration;
-
-      const subA: MultilingualSubtitleItem = {
-        ...targetSub,
-        duration: Math.round(firstDuration * 100) / 100,
-      };
-
-      const subB: MultilingualSubtitleItem = {
-        ...targetSub,
-        id: `sub_${Date.now()}_b`,
-        startTime: Math.round(currentTime * 100) / 100,
-        duration: Math.round(secondDuration * 100) / 100,
-      };
-
-      const updatedSubs = project.subtitles.flatMap((s) => (s.id === targetSub.id ? [subA, subB] : [s]));
-      onUpdateProject({
-        ...project,
-        subtitles: updatedSubs,
-        updatedAt: new Date().toISOString(),
-      });
-      return;
-    }
-
-    // 3. Try Audio Track
-    const targetAudio = project.audioTracks.find(
-      (a) => a.id === selectedItemId && currentTime > a.startTime + 0.3 && currentTime < a.startTime + a.duration - 0.3
-    );
-    if (targetAudio) {
-      const firstDuration = currentTime - targetAudio.startTime;
-      const secondDuration = targetAudio.duration - firstDuration;
-
-      const audioA: AudioTrackItem = {
-        ...targetAudio,
-        duration: Math.round(firstDuration * 100) / 100,
-      };
-
-      const audioB: AudioTrackItem = {
-        ...targetAudio,
-        id: `audio_${Date.now()}_b`,
-        name: `${targetAudio.name} (分割)`,
-        startTime: Math.round(currentTime * 100) / 100,
-        duration: Math.round(secondDuration * 100) / 100,
-        trimStart: (targetAudio.trimStart || 0) + firstDuration,
-      };
-
-      const updatedAudio = project.audioTracks.flatMap((a) => (a.id === targetAudio.id ? [audioA, audioB] : [a]));
-      onUpdateProject({
-        ...project,
-        audioTracks: updatedAudio,
-        updatedAt: new Date().toISOString(),
-      });
-      return;
-    }
-
-    alert('選択中のアイテムが現在の再生位置（赤線）と交差していないか、端に近すぎるため分割できません。');
-  };
-
   // Generate dynamic time tick markers
   const ticks = [];
   const step = duration > 100 ? 10 : duration > 40 ? 5 : 2;
@@ -423,7 +322,7 @@ export const Timeline: React.FC<TimelineProps> = ({
 
           {/* Split at playhead button */}
           <button
-            onClick={handleSplitCurrent}
+            onClick={onSplitAtPlayhead}
             className="flex items-center space-x-1 px-2.5 py-0.5 bg-[#1b2332] hover:bg-[#253248] text-[#E2E8F0] border border-[#2f3d54] rounded text-[11px] transition-colors"
             title="再生ヘッド位置で選択クリップを分割 (ショートカット: S)"
           >
@@ -921,12 +820,7 @@ export const Timeline: React.FC<TimelineProps> = ({
                   const displayStart = isBeingDragged && ghostPreview ? ghostPreview.startTime : audio.startTime;
                   const displayDur = isBeingDragged && ghostPreview ? ghostPreview.duration : audio.duration;
 
-                  const isNarrationNow = project.audioTracks.some(
-                    (t) =>
-                      t.type === 'narration' &&
-                      currentTime >= t.startTime &&
-                      currentTime < t.startTime + t.duration
-                  );
+                  const isNarrationNow = isNarrationAudibleAt(project.audioTracks, currentTime, mutedTracks);
 
                   return (
                     <div
