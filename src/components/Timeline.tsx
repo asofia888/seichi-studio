@@ -67,7 +67,8 @@ export const Timeline: React.FC<TimelineProps> = ({
   const [dragState, setDragState] = useState<DragState | null>(null);
   const [ghostPreview, setGhostPreview] = useState<{ startTime: number; duration: number } | null>(null);
 
-  const duration = Math.max(10, project.duration);
+  // Guard against a non-finite duration: the tick loop below would never terminate
+  const duration = Number.isFinite(project.duration) ? Math.max(10, project.duration) : 10;
 
   // Muted tracks state helper
   const mutedTracks = project.mutedTracks || {};

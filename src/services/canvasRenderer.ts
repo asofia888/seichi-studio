@@ -461,7 +461,7 @@ export class CanvasRenderer {
     ctx.fillStyle = '#FFFFFF';
     ctx.fillText(text, W / 2, bannerY + bannerH / 2 + fontSize * 0.35);
 
-    // If English or Thai is selected and different from Japanese, optionally show small Japanese subtitle above
+    // If English is selected and different from Japanese, optionally show small Japanese subtitle above
     if (lang !== 'ja' && sub.text.ja && sub.text.ja !== text) {
       ctx.shadowBlur = 4;
       ctx.fillStyle = 'rgba(212, 175, 55, 0.85)';

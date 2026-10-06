@@ -104,11 +104,10 @@ export const ExportModal: React.FC<ExportModalProps> = ({
             <Globe className="w-3.5 h-3.5 text-[#D4AF37]" />
             <span>動画内に焼き込む字幕言語を選択:</span>
           </label>
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-2 gap-2">
             {[
               { code: 'ja', label: '日本語 (JA)' },
               { code: 'en', label: 'English (EN)' },
-              { code: 'th', label: 'ภาษาไทย (TH)' },
             ].map((lang) => (
               <button
                 key={lang.code}

@@ -4,13 +4,11 @@
 
 export type AspectRatio = '16:9' | '9:16';
 export type SubtitleCategory = 'sanctuary_header' | 'commentary' | 'etiquette_tip';
-export type SupportedLanguage = 'ja' | 'en' | 'th';
+export type SupportedLanguage = 'ja' | 'en';
 
 export interface LocalizedText {
   ja: string;
   en: string;
-  th: string;
-  [lang: string]: string;
 }
 
 // 1. プロジェクト設定
@@ -110,7 +108,6 @@ export interface GlossaryItem {
   id: string;
   japanese: string;
   english: string;
-  thai: string;
   note?: string;
 }
 

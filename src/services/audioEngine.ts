@@ -20,6 +20,8 @@ class AudioEngine {
   // MediaRecorder for mic recording
   private mediaRecorder: MediaRecorder | null = null;
   private recordedChunks: Blob[] = [];
+  private isStartingRecording = false;
+  private recordStartedAt = 0;
 
   public init() {
     if (!this.ctx) {
@@ -204,52 +206,62 @@ class AudioEngine {
    * Microphone recording feature
    */
   public async startRecording(): Promise<void> {
-    this.recordedChunks = [];
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    this.mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+    // A second recorder would orphan the first one and mix both into recordedChunks
+    if (this.mediaRecorder || this.isStartingRecording) {
+      throw new Error('すでに録音中です');
+    }
+    this.isStartingRecording = true;
+    try {
+      this.recordedChunks = [];
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      this.mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
 
-    this.mediaRecorder.ondataavailable = (e) => {
-      if (e.data && e.data.size > 0) {
-        this.recordedChunks.push(e.data);
-      }
-    };
+      this.mediaRecorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) {
+          this.recordedChunks.push(e.data);
+        }
+      };
 
-    this.mediaRecorder.start(100);
+      this.mediaRecorder.start(100);
+      this.recordStartedAt = performance.now();
+    } finally {
+      this.isStartingRecording = false;
+    }
   }
 
   public stopRecording(): Promise<{ blob: Blob; url: string; duration: number }> {
     return new Promise((resolve, reject) => {
-      if (!this.mediaRecorder) {
+      const recorder = this.mediaRecorder;
+      if (!recorder) {
         return reject(new Error('Recorder not started'));
       }
+      const elapsedSec = (performance.now() - this.recordStartedAt) / 1000;
 
-      this.mediaRecorder.onstop = async () => {
+      recorder.onstop = async () => {
+        // Stop microphone stream tracks
+        recorder.stream.getTracks().forEach((t) => t.stop());
+        this.mediaRecorder = null;
+
         const blob = new Blob(this.recordedChunks, { type: 'audio/webm' });
         const url = URL.createObjectURL(blob);
-        
-        // Calculate audio duration
-        const tempAudio = new Audio(url);
-        tempAudio.onloadedmetadata = () => {
-          resolve({
-            blob,
-            url,
-            duration: tempAudio.duration || 3.0,
-          });
-        };
-        tempAudio.onerror = () => {
-          resolve({
-            blob,
-            url,
-            duration: 3.0,
-          });
-        };
 
-        // Stop microphone stream tracks
-        this.mediaRecorder?.stream.getTracks().forEach((t) => t.stop());
-        this.mediaRecorder = null;
+        // Chrome's MediaRecorder WebM has no duration header, so <audio>.duration reports Infinity.
+        // Decode the audio for the real length, falling back to the wall-clock recording time.
+        let duration = elapsedSec;
+        try {
+          this.init();
+          const decoded = await this.ctx!.decodeAudioData(await blob.arrayBuffer());
+          if (Number.isFinite(decoded.duration) && decoded.duration > 0) {
+            duration = decoded.duration;
+          }
+        } catch (e) {
+          console.warn('Could not decode recording, using elapsed time as duration:', e);
+        }
+
+        resolve({ blob, url, duration });
       };
 
-      this.mediaRecorder.stop();
+      recorder.stop();
     });
   }
 

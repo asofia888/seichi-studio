@@ -33,7 +33,6 @@ export const ChaptersPanel: React.FC<ChaptersPanelProps> = ({
       title: {
         ja: title,
         en: title,
-        th: title,
       },
     };
 

@@ -39,12 +39,12 @@ export const TelopPanel: React.FC<TelopPanelProps> = ({
         startTime: Math.floor(currentTime * 10) / 10,
         duration: 7,
         category: 'sanctuary_header',
-        text: { ja: '新規 聖地名', en: '', th: '' },
+        text: { ja: '新規 聖地名', en: '' },
         sanctuaryMeta: {
-          name: { ja: '新規 聖地名', en: '', th: '' },
-          location: { ja: '都道府県・市区町村', en: '', th: '' },
-          deity: { ja: '御祭神名', en: '', th: '' },
-          blessing: { ja: '開運・心願成就', en: '', th: '' },
+          name: { ja: '新規 聖地名', en: '' },
+          location: { ja: '都道府県・市区町村', en: '' },
+          deity: { ja: '御祭神名', en: '' },
+          blessing: { ja: '開運・心願成就', en: '' },
         },
       };
     } else if (category === 'etiquette_tip') {
@@ -53,10 +53,10 @@ export const TelopPanel: React.FC<TelopPanelProps> = ({
         startTime: Math.floor(currentTime * 10) / 10,
         duration: 6,
         category: 'etiquette_tip',
-        text: { ja: '参拝作法の心得を入力', en: '', th: '' },
+        text: { ja: '参拝作法の心得を入力', en: '' },
         etiquetteTip: {
-          title: { ja: '参拝の作法心得', en: 'Worship Etiquette', th: 'ธรรมเนียมปฏิบัติ' },
-          detail: { ja: '二礼二拍手一礼の作法で静かに拝礼します。', en: '', th: '' },
+          title: { ja: '参拝の作法心得', en: 'Worship Etiquette' },
+          detail: { ja: '二礼二拍手一礼の作法で静かに拝礼します。', en: '' },
         },
       };
     } else {
@@ -65,7 +65,7 @@ export const TelopPanel: React.FC<TelopPanelProps> = ({
         startTime: Math.floor(currentTime * 10) / 10,
         duration: 6,
         category: 'commentary',
-        text: { ja: '静謐な神域の解説文をここに入力します。', en: '', th: '' },
+        text: { ja: '静謐な神域の解説文をここに入力します。', en: '' },
       };
     }
 

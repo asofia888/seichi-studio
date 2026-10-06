@@ -48,12 +48,10 @@ export const AccessCardPanel: React.FC<AccessCardPanelProps> = ({
       sanctuaryName: {
         ja: project.title.split(' ')[0] || '聖地名',
         en: 'Sanctuary Name',
-        th: 'ชื่อศาลเจ้า',
       },
       address: {
         ja: '東京都千代田区...',
         en: 'Chiyoda-ku, Tokyo, Japan',
-        th: 'เขตชิโยดะ โตเกียว ญี่ปุ่น',
       },
       latLng: {
         lat: 35.6961,
@@ -62,17 +60,14 @@ export const AccessCardPanel: React.FC<AccessCardPanelProps> = ({
       nearestStation: {
         ja: '最寄り駅から徒歩5分',
         en: '5 min walk from nearest station',
-        th: 'เดิน 5 นาทีจากสถานีที่ใกล้ที่สุด',
       },
       parking: {
         ja: '参拝者用駐車場あり (無料30台)',
         en: 'Free parking available (30 cars)',
-        th: 'มีที่จอดรถฟรีสำหรับผู้มาสักการะ (30 คัน)',
       },
       visitingHours: {
         ja: '境内参拝自由 (授与所 9:00〜17:00)',
         en: 'Grounds open 24h (Office 9:00-17:00)',
-        th: 'เข้าสักการะได้ตลอดเวลา (จุดจำหน่าย 9:00 - 17:00 น.)',
       },
       mapMode: 'leaflet',
       attribution: '© OpenStreetMap contributors',

@@ -33,7 +33,6 @@ export const TranslationPanel: React.FC<TranslationPanelProps> = ({
   // Glossary new item state
   const [newJaTerm, setNewJaTerm] = useState('');
   const [newEnTerm, setNewEnTerm] = useState('');
-  const [newThTerm, setNewThTerm] = useState('');
 
   // Save API Key to project & localStorage
   const handleSaveApiKey = () => {
@@ -55,7 +54,6 @@ export const TranslationPanel: React.FC<TranslationPanelProps> = ({
       id: `glossary_${Date.now()}`,
       japanese: newJaTerm.trim(),
       english: newEnTerm.trim(),
-      thai: newThTerm.trim() || newEnTerm.trim(),
     };
 
     onUpdateProject({
@@ -66,7 +64,6 @@ export const TranslationPanel: React.FC<TranslationPanelProps> = ({
 
     setNewJaTerm('');
     setNewEnTerm('');
-    setNewThTerm('');
   };
 
   const handleDeleteGlossaryTerm = (id: string) => {
@@ -81,7 +78,7 @@ export const TranslationPanel: React.FC<TranslationPanelProps> = ({
   const handleTranslateSingle = async (sub: MultilingualSubtitleItem, index: number) => {
     setTranslatingIndex(index);
     try {
-      const { en, th } = await translateWithClaude(
+      const { en } = await translateWithClaude(
         sub.text.ja,
         project.claudeApiKey,
         project.claudeModel,
@@ -95,7 +92,6 @@ export const TranslationPanel: React.FC<TranslationPanelProps> = ({
           text: {
             ...s.text,
             en: en || s.text.en,
-            th: th || s.text.th,
           },
         };
       });
@@ -125,7 +121,7 @@ export const TranslationPanel: React.FC<TranslationPanelProps> = ({
         if (!sub.text.ja) continue;
 
         setTranslatingIndex(i);
-        const { en, th } = await translateWithClaude(
+        const { en } = await translateWithClaude(
           sub.text.ja,
           project.claudeApiKey,
           project.claudeModel,
@@ -137,7 +133,6 @@ export const TranslationPanel: React.FC<TranslationPanelProps> = ({
           text: {
             ...sub.text,
             en,
-            th,
           },
         };
       }
@@ -147,7 +142,7 @@ export const TranslationPanel: React.FC<TranslationPanelProps> = ({
         subtitles: newSubs,
         updatedAt: new Date().toISOString(),
       });
-      setStatusMessage('すべての解説テロップの英・タイ語翻訳が完了しました！');
+      setStatusMessage('すべての解説テロップの英語翻訳が完了しました！');
       setTimeout(() => setStatusMessage(null), 4000);
     } catch (e: any) {
       alert(`翻訳中にエラーが発生しました: ${e.message}`);
@@ -240,7 +235,7 @@ export const TranslationPanel: React.FC<TranslationPanelProps> = ({
               <div className="space-y-0.5 truncate">
                 <div className="font-semibold text-white truncate font-serif-jp">{g.japanese}</div>
                 <div className="text-[10px] text-[#A0AEC0] truncate">
-                  EN: <span className="text-[#93C5FD]">{g.english}</span> | TH: <span className="text-[#86EFAC]">{g.thai}</span>
+                  EN: <span className="text-[#93C5FD]">{g.english}</span>
                 </div>
               </div>
               <button
@@ -257,7 +252,7 @@ export const TranslationPanel: React.FC<TranslationPanelProps> = ({
         {/* Add new term */}
         <div className="pt-2 border-t border-[#202938] space-y-2">
           <span className="text-[11px] font-medium text-gray-300 block">新規用語の登録:</span>
-          <div className="grid grid-cols-3 gap-1.5">
+          <div className="grid grid-cols-2 gap-1.5">
             <input
               type="text"
               placeholder="日本語 (例: 天照大御神)"
@@ -270,13 +265,6 @@ export const TranslationPanel: React.FC<TranslationPanelProps> = ({
               placeholder="英語 (Amaterasu-Ōmikami)"
               value={newEnTerm}
               onChange={(e) => setNewEnTerm(e.target.value)}
-              className="bg-[#1a2331] border border-[#2b384c] rounded px-2 py-1 text-xs text-white"
-            />
-            <input
-              type="text"
-              placeholder="タイ語 (อามาเตราซุ...)"
-              value={newThTerm}
-              onChange={(e) => setNewThTerm(e.target.value)}
               className="bg-[#1a2331] border border-[#2b384c] rounded px-2 py-1 text-xs text-white"
             />
           </div>
@@ -305,7 +293,7 @@ export const TranslationPanel: React.FC<TranslationPanelProps> = ({
           ) : (
             <>
               <Sparkles className="w-4 h-4 text-[#0B0D11]" />
-              <span>全テロップを一括翻訳 (EN & TH)</span>
+              <span>全テロップを一括翻訳 (EN)</span>
             </>
           )}
         </button>
@@ -317,7 +305,7 @@ export const TranslationPanel: React.FC<TranslationPanelProps> = ({
           <FileText className="w-3.5 h-3.5 text-[#38BDF8]" />
           <span>YouTube用 SRT字幕ファイルの書き出し</span>
         </span>
-        <div className="grid grid-cols-3 gap-2 pt-1">
+        <div className="grid grid-cols-2 gap-2 pt-1">
           <button
             onClick={() => downloadSRTFile(project.subtitles, 'ja', project.title)}
             className="py-1.5 px-2 bg-[#1b2434] hover:bg-[#232f44] border border-[#32435e] rounded text-xs text-white flex items-center justify-center space-x-1"
@@ -331,13 +319,6 @@ export const TranslationPanel: React.FC<TranslationPanelProps> = ({
           >
             <Download className="w-3 h-3 text-[#60A5FA]" />
             <span>英語 SRT</span>
-          </button>
-          <button
-            onClick={() => downloadSRTFile(project.subtitles, 'th', project.title)}
-            className="py-1.5 px-2 bg-[#1b2434] hover:bg-[#232f44] border border-[#32435e] rounded text-xs text-white flex items-center justify-center space-x-1"
-          >
-            <Download className="w-3 h-3 text-[#34D399]" />
-            <span>タイ語 SRT</span>
           </button>
         </div>
       </div>
@@ -388,18 +369,6 @@ export const TranslationPanel: React.FC<TranslationPanelProps> = ({
                   onChange={(e) => handleTextChange(sub.id, 'en', e.target.value)}
                   placeholder="English translation..."
                   className="w-full bg-[#18202d] border border-[#283547] rounded px-2.5 py-1.5 text-white text-xs outline-none focus:border-[#60A5FA]"
-                />
-              </div>
-
-              {/* Thai Translation */}
-              <div>
-                <span className="text-[10px] text-[#34D399] block mb-0.5">🇹🇭 タイ語（ภาษาไทย）:</span>
-                <input
-                  type="text"
-                  value={sub.text.th || ''}
-                  onChange={(e) => handleTextChange(sub.id, 'th', e.target.value)}
-                  placeholder="คำแปลภาษาไทย..."
-                  className="w-full bg-[#18202d] border border-[#283547] rounded px-2.5 py-1.5 text-white text-xs outline-none focus:border-[#34D399]"
                 />
               </div>
             </div>

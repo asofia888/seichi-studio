@@ -157,7 +157,6 @@ export const Header: React.FC<HeaderProps> = ({
           >
             <option value="ja" className="bg-[#151a23]">日本語 (JA)</option>
             <option value="en" className="bg-[#151a23]">English (EN)</option>
-            <option value="th" className="bg-[#151a23]">ภาษาไทย (TH)</option>
           </select>
         </div>
 

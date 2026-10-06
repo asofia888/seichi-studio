@@ -135,9 +135,12 @@ export default function App() {
     audioEngine.syncPlayback(currentTime, isPlaying, project.audioTracks, project.mutedTracks);
   }, [currentTime, isPlaying, project.audioTracks, project.mutedTracks]);
 
-  // Spacebar play/pause and keyboard shortcuts
+  // Spacebar play/pause and keyboard shortcuts.
+  // The window listener is registered once and always calls the latest handler through a ref,
+  // so shortcuts never act on stale state (e.g. "R" seeing an old isRecordingMic / currentTime).
+  const keyDownHandlerRef = useRef<(e: KeyboardEvent) => void>(() => {});
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
+    keyDownHandlerRef.current = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
         return;
       }
@@ -203,10 +206,13 @@ export default function App() {
         handleRedo();
       }
     };
+  });
 
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [project.duration, selectedClipId, selectedSubId, selectedAudioId, project]);
+  useEffect(() => {
+    const listener = (e: KeyboardEvent) => keyDownHandlerRef.current(e);
+    window.addEventListener('keydown', listener);
+    return () => window.removeEventListener('keydown', listener);
+  }, []);
 
   // Microphone recording toggle
   const handleToggleRecordMic = async () => {
