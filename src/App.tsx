@@ -6,7 +6,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { ProjectData, SupportedLanguage } from './types';
 import { initialProjectData } from './services/sampleData';
-import { loadLastProject, saveProjectToStorage } from './services/storage';
+import { loadLastProject, saveProjectToStorage, saveMediaBlob } from './services/storage';
 import { audioEngine } from './services/audioEngine';
 
 import { Header } from './components/Header';
@@ -236,6 +236,11 @@ export default function App() {
         // Extract waveform from recorded microphone audio
         const waveform = await audioEngine.extractWaveform(blob, 40);
 
+        // Keep the recording in IndexedDB so it survives a reload (the blob: URL does not).
+        // If saving fails, the take is still usable in this session.
+        const blobKey = `narration_${Date.now()}`;
+        await saveMediaBlob(blobKey, blob).catch((e) => console.warn('Failed to store recording:', e));
+
         const newNarration = {
           id: `narration_${Date.now()}`,
           name: `録音 (${recordStartTimeRef.current.toFixed(1)}s) 🎙️`,
@@ -244,6 +249,7 @@ export default function App() {
           duration: Math.max(1, duration),
           volume: 1.0,
           dataUrl: url,
+          blobKey,
           isRecorded: true,
           waveform,
         };

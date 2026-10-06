@@ -1,6 +1,6 @@
 import React from 'react';
 import { ProjectData, SupportedLanguage } from '../types';
-import { exportProjectAsJSON } from '../services/storage';
+import { exportProjectAsJSON, restoreMediaUrls } from '../services/storage';
 import { shrinePresets } from '../services/sampleData';
 import {
   Sparkles,
@@ -66,7 +66,8 @@ export const Header: React.FC<HeaderProps> = ({
       try {
         const loaded = JSON.parse(event.target?.result as string);
         if (loaded && loaded.title) {
-          onUpdateProject(loaded);
+          // Media files are not inside the JSON; reconnect them from this browser's storage
+          restoreMediaUrls(loaded).then(onUpdateProject);
         }
       } catch (err) {
         alert('プロジェクトファイルの読み込みに失敗しました。有効なJSONファイルかご確認ください。');
