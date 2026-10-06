@@ -1,0 +1,411 @@
+import React, { useState } from 'react';
+import { ProjectData, GlossaryItem, MultilingualSubtitleItem, SupportedLanguage } from '../../types';
+import { translateWithClaude } from '../../services/claudeApi';
+import { downloadSRTFile } from '../../services/srtExporter';
+import {
+  Globe,
+  Key,
+  BookOpen,
+  Sparkles,
+  Download,
+  Plus,
+  Trash2,
+  Check,
+  RefreshCw,
+  AlertCircle,
+  FileText,
+} from 'lucide-react';
+
+interface TranslationPanelProps {
+  project: ProjectData;
+  onUpdateProject: (p: ProjectData) => void;
+}
+
+export const TranslationPanel: React.FC<TranslationPanelProps> = ({
+  project,
+  onUpdateProject,
+}) => {
+  const [apiKeyInput, setApiKeyInput] = useState(project.claudeApiKey || '');
+  const [isTranslatingAll, setIsTranslatingAll] = useState(false);
+  const [translatingIndex, setTranslatingIndex] = useState<number | null>(null);
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
+
+  // Glossary new item state
+  const [newJaTerm, setNewJaTerm] = useState('');
+  const [newEnTerm, setNewEnTerm] = useState('');
+  const [newThTerm, setNewThTerm] = useState('');
+
+  // Save API Key to project & localStorage
+  const handleSaveApiKey = () => {
+    localStorage.setItem('sacred_studio_claude_key', apiKeyInput);
+    onUpdateProject({
+      ...project,
+      claudeApiKey: apiKeyInput,
+      updatedAt: new Date().toISOString(),
+    });
+    setStatusMessage('Claude APIキーをブラウザ内に保存しました。');
+    setTimeout(() => setStatusMessage(null), 3500);
+  };
+
+  // Add term to sacred glossary
+  const handleAddGlossaryTerm = () => {
+    if (!newJaTerm.trim() || !newEnTerm.trim()) return;
+
+    const newItem: GlossaryItem = {
+      id: `glossary_${Date.now()}`,
+      japanese: newJaTerm.trim(),
+      english: newEnTerm.trim(),
+      thai: newThTerm.trim() || newEnTerm.trim(),
+    };
+
+    onUpdateProject({
+      ...project,
+      glossary: [...project.glossary, newItem],
+      updatedAt: new Date().toISOString(),
+    });
+
+    setNewJaTerm('');
+    setNewEnTerm('');
+    setNewThTerm('');
+  };
+
+  const handleDeleteGlossaryTerm = (id: string) => {
+    onUpdateProject({
+      ...project,
+      glossary: project.glossary.filter((g) => g.id !== id),
+      updatedAt: new Date().toISOString(),
+    });
+  };
+
+  // Translate a single subtitle
+  const handleTranslateSingle = async (sub: MultilingualSubtitleItem, index: number) => {
+    setTranslatingIndex(index);
+    try {
+      const { en, th } = await translateWithClaude(
+        sub.text.ja,
+        project.claudeApiKey,
+        project.claudeModel,
+        project.glossary
+      );
+
+      const updatedSubtitles = project.subtitles.map((s) => {
+        if (s.id !== sub.id) return s;
+        return {
+          ...s,
+          text: {
+            ...s.text,
+            en: en || s.text.en,
+            th: th || s.text.th,
+          },
+        };
+      });
+
+      onUpdateProject({
+        ...project,
+        subtitles: updatedSubtitles,
+        updatedAt: new Date().toISOString(),
+      });
+    } catch (err: any) {
+      alert(`翻訳エラー: ${err.message}`);
+    } finally {
+      setTranslatingIndex(null);
+    }
+  };
+
+  // Translate all subtitles batch
+  const handleTranslateAll = async () => {
+    if (project.subtitles.length === 0) return;
+    setIsTranslatingAll(true);
+    setStatusMessage('Claude APIで多言語翻訳を実行中...');
+
+    try {
+      const newSubs = [...project.subtitles];
+      for (let i = 0; i < newSubs.length; i++) {
+        const sub = newSubs[i];
+        if (!sub.text.ja) continue;
+
+        setTranslatingIndex(i);
+        const { en, th } = await translateWithClaude(
+          sub.text.ja,
+          project.claudeApiKey,
+          project.claudeModel,
+          project.glossary
+        );
+
+        newSubs[i] = {
+          ...sub,
+          text: {
+            ...sub.text,
+            en,
+            th,
+          },
+        };
+      }
+
+      onUpdateProject({
+        ...project,
+        subtitles: newSubs,
+        updatedAt: new Date().toISOString(),
+      });
+      setStatusMessage('すべての解説テロップの英・タイ語翻訳が完了しました！');
+      setTimeout(() => setStatusMessage(null), 4000);
+    } catch (e: any) {
+      alert(`翻訳中にエラーが発生しました: ${e.message}`);
+    } finally {
+      setIsTranslatingAll(false);
+      setTranslatingIndex(null);
+    }
+  };
+
+  // Update text directly in line-by-line review
+  const handleTextChange = (subId: string, lang: SupportedLanguage, value: string) => {
+    const updated = project.subtitles.map((s) => {
+      if (s.id !== subId) return s;
+      return {
+        ...s,
+        text: {
+          ...s.text,
+          [lang]: value,
+        },
+      };
+    });
+    onUpdateProject({
+      ...project,
+      subtitles: updated,
+      updatedAt: new Date().toISOString(),
+    });
+  };
+
+  return (
+    <div className="h-full flex flex-col p-4 overflow-y-auto space-y-6 text-sm text-[#E2E8F0]">
+      {/* 1. Claude API Key Settings */}
+      <div className="bg-[#121722] border border-[#222c3d] rounded-lg p-3 space-y-2.5">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-semibold text-[#D4AF37] flex items-center space-x-1.5">
+            <Key className="w-4 h-4" />
+            <span>Claude API 設定 (ブラウザ内保管)</span>
+          </span>
+          <span className="text-[10px] text-gray-400">Anthropic Messages API</span>
+        </div>
+
+        <p className="text-[11px] text-[#8A99AD] leading-relaxed">
+          APIキーは外部サーバーへ送信されず、お使いのブラウザLocalStorageにのみ保存されます。
+        </p>
+
+        <div className="flex items-center space-x-2">
+          <input
+            type="password"
+            placeholder="sk-ant-api03-..."
+            value={apiKeyInput}
+            onChange={(e) => setApiKeyInput(e.target.value)}
+            className="flex-1 bg-[#1a2331] border border-[#2d3a4e] rounded px-3 py-1.5 text-xs text-white outline-none focus:border-[#D4AF37] font-mono"
+          />
+          <button
+            onClick={handleSaveApiKey}
+            className="px-3 py-1.5 bg-[#D4AF37] hover:brightness-110 text-[#0B0D11] text-xs font-semibold rounded shrink-0 transition-all"
+          >
+            保存
+          </button>
+        </div>
+
+        {statusMessage && (
+          <div className="text-[11px] text-emerald-400 bg-emerald-950/40 border border-emerald-800/60 rounded px-2.5 py-1 flex items-center space-x-1">
+            <Check className="w-3.5 h-3.5 shrink-0" />
+            <span>{statusMessage}</span>
+          </div>
+        )}
+      </div>
+
+      {/* 2. Sacred Sanctuary Glossary (用語集) */}
+      <div className="bg-[#121722] border border-[#222c3d] rounded-lg p-3 space-y-3">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-semibold text-[#D4AF37] flex items-center space-x-1.5">
+            <BookOpen className="w-4 h-4" />
+            <span>神社・聖地 固有名詞 用語集 ({project.glossary.length}件)</span>
+          </span>
+          <span className="text-[10px] text-amber-300/80">表記ゆれ防止</span>
+        </div>
+
+        <p className="text-[11px] text-[#8A99AD] leading-relaxed">
+          御祭神や聖地名の表記ルールを登録すると、Claude翻訳時に自動的に指定表記で統一されます。
+        </p>
+
+        {/* Existing Glossary Items */}
+        <div className="space-y-1.5 max-h-36 overflow-y-auto pr-1">
+          {project.glossary.map((g) => (
+            <div
+              key={g.id}
+              className="bg-[#18202d] border border-[#263345] rounded p-2 text-xs flex items-center justify-between"
+            >
+              <div className="space-y-0.5 truncate">
+                <div className="font-semibold text-white truncate font-serif-jp">{g.japanese}</div>
+                <div className="text-[10px] text-[#A0AEC0] truncate">
+                  EN: <span className="text-[#93C5FD]">{g.english}</span> | TH: <span className="text-[#86EFAC]">{g.thai}</span>
+                </div>
+              </div>
+              <button
+                onClick={() => handleDeleteGlossaryTerm(g.id)}
+                className="text-gray-500 hover:text-red-400 p-1 shrink-0"
+                title="削除"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          ))}
+        </div>
+
+        {/* Add new term */}
+        <div className="pt-2 border-t border-[#202938] space-y-2">
+          <span className="text-[11px] font-medium text-gray-300 block">新規用語の登録:</span>
+          <div className="grid grid-cols-3 gap-1.5">
+            <input
+              type="text"
+              placeholder="日本語 (例: 天照大御神)"
+              value={newJaTerm}
+              onChange={(e) => setNewJaTerm(e.target.value)}
+              className="bg-[#1a2331] border border-[#2b384c] rounded px-2 py-1 text-xs text-white"
+            />
+            <input
+              type="text"
+              placeholder="英語 (Amaterasu-Ōmikami)"
+              value={newEnTerm}
+              onChange={(e) => setNewEnTerm(e.target.value)}
+              className="bg-[#1a2331] border border-[#2b384c] rounded px-2 py-1 text-xs text-white"
+            />
+            <input
+              type="text"
+              placeholder="タイ語 (อามาเตราซุ...)"
+              value={newThTerm}
+              onChange={(e) => setNewThTerm(e.target.value)}
+              className="bg-[#1a2331] border border-[#2b384c] rounded px-2 py-1 text-xs text-white"
+            />
+          </div>
+          <button
+            onClick={handleAddGlossaryTerm}
+            className="w-full py-1 bg-[#1e293b] hover:bg-[#28374f] text-[#E2E8F0] border border-[#334155] rounded text-xs flex items-center justify-center space-x-1"
+          >
+            <Plus className="w-3.5 h-3.5 text-[#D4AF37]" />
+            <span>用語を追加</span>
+          </button>
+        </div>
+      </div>
+
+      {/* 3. Batch Translate & SRT Download Actions */}
+      <div className="flex items-center space-x-2">
+        <button
+          onClick={handleTranslateAll}
+          disabled={isTranslatingAll}
+          className="flex-1 py-2 bg-gradient-to-r from-[#D4AF37] to-[#E5C07B] hover:brightness-110 text-[#0B0D11] text-xs font-bold rounded shadow flex items-center justify-center space-x-1.5 disabled:opacity-50"
+        >
+          {isTranslatingAll ? (
+            <>
+              <RefreshCw className="w-4 h-4 animate-spin text-[#0B0D11]" />
+              <span>翻訳中 ({translatingIndex !== null ? `${translatingIndex + 1}/${project.subtitles.length}` : ''})...</span>
+            </>
+          ) : (
+            <>
+              <Sparkles className="w-4 h-4 text-[#0B0D11]" />
+              <span>全テロップを一括翻訳 (EN & TH)</span>
+            </>
+          )}
+        </button>
+      </div>
+
+      {/* SRT Download Section */}
+      <div className="bg-[#131924] border border-[#242f40] rounded-lg p-3 space-y-2">
+        <span className="text-xs font-semibold text-[#CBD5E1] flex items-center space-x-1">
+          <FileText className="w-3.5 h-3.5 text-[#38BDF8]" />
+          <span>YouTube用 SRT字幕ファイルの書き出し</span>
+        </span>
+        <div className="grid grid-cols-3 gap-2 pt-1">
+          <button
+            onClick={() => downloadSRTFile(project.subtitles, 'ja', project.title)}
+            className="py-1.5 px-2 bg-[#1b2434] hover:bg-[#232f44] border border-[#32435e] rounded text-xs text-white flex items-center justify-center space-x-1"
+          >
+            <Download className="w-3 h-3 text-[#D4AF37]" />
+            <span>日本語 SRT</span>
+          </button>
+          <button
+            onClick={() => downloadSRTFile(project.subtitles, 'en', project.title)}
+            className="py-1.5 px-2 bg-[#1b2434] hover:bg-[#232f44] border border-[#32435e] rounded text-xs text-white flex items-center justify-center space-x-1"
+          >
+            <Download className="w-3 h-3 text-[#60A5FA]" />
+            <span>英語 SRT</span>
+          </button>
+          <button
+            onClick={() => downloadSRTFile(project.subtitles, 'th', project.title)}
+            className="py-1.5 px-2 bg-[#1b2434] hover:bg-[#232f44] border border-[#32435e] rounded text-xs text-white flex items-center justify-center space-x-1"
+          >
+            <Download className="w-3 h-3 text-[#34D399]" />
+            <span>タイ語 SRT</span>
+          </button>
+        </div>
+      </div>
+
+      {/* 4. Line-by-Line Review & Inline Editing */}
+      <div className="space-y-3">
+        <span className="text-xs font-semibold text-[#A0AEC0] uppercase tracking-wider block">
+          行ごとの翻訳確認・直接修正 ({project.subtitles.length}行)
+        </span>
+
+        <div className="space-y-3">
+          {project.subtitles.map((sub, idx) => (
+            <div
+              key={sub.id}
+              className="bg-[#121620] border border-[#212a38] rounded-lg p-3 space-y-2 text-xs"
+            >
+              <div className="flex items-center justify-between text-[11px] text-[#718096] border-b border-[#1b222e] pb-1.5">
+                <span className="font-mono text-[#D4AF37]">
+                  #{idx + 1} ({sub.startTime}s - {(sub.startTime + sub.duration).toFixed(1)}s)
+                </span>
+                <button
+                  onClick={() => handleTranslateSingle(sub, idx)}
+                  disabled={translatingIndex === idx}
+                  className="flex items-center space-x-1 text-[#60A5FA] hover:text-[#93C5FD] transition-colors"
+                >
+                  <RefreshCw className={`w-3 h-3 ${translatingIndex === idx ? 'animate-spin' : ''}`} />
+                  <span>この行だけ再翻訳</span>
+                </button>
+              </div>
+
+              {/* Japanese Original */}
+              <div>
+                <span className="text-[10px] text-[#D4AF37] block mb-0.5">🇯🇵 日本語（原文）:</span>
+                <input
+                  type="text"
+                  value={sub.text.ja}
+                  onChange={(e) => handleTextChange(sub.id, 'ja', e.target.value)}
+                  className="w-full bg-[#18202d] border border-[#283547] rounded px-2.5 py-1.5 text-white font-serif-jp text-xs outline-none focus:border-[#D4AF37]"
+                />
+              </div>
+
+              {/* English Translation */}
+              <div>
+                <span className="text-[10px] text-[#60A5FA] block mb-0.5">🇬🇧 英語（English）:</span>
+                <input
+                  type="text"
+                  value={sub.text.en || ''}
+                  onChange={(e) => handleTextChange(sub.id, 'en', e.target.value)}
+                  placeholder="English translation..."
+                  className="w-full bg-[#18202d] border border-[#283547] rounded px-2.5 py-1.5 text-white text-xs outline-none focus:border-[#60A5FA]"
+                />
+              </div>
+
+              {/* Thai Translation */}
+              <div>
+                <span className="text-[10px] text-[#34D399] block mb-0.5">🇹🇭 タイ語（ภาษาไทย）:</span>
+                <input
+                  type="text"
+                  value={sub.text.th || ''}
+                  onChange={(e) => handleTextChange(sub.id, 'th', e.target.value)}
+                  placeholder="คำแปลภาษาไทย..."
+                  className="w-full bg-[#18202d] border border-[#283547] rounded px-2.5 py-1.5 text-white text-xs outline-none focus:border-[#34D399]"
+                />
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+};
