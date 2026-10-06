@@ -102,7 +102,6 @@ export const AccessCardPanel: React.FC<AccessCardPanelProps> = ({
           <MapPin className="w-4 h-4 text-[#22c55e]" />
           <span>アクセス案内カード設定</span>
         </span>
-        <span className="text-xs text-gray-400">OSM Leaflet連動</span>
       </div>
 
       {!activeCard ? (
@@ -148,7 +147,7 @@ export const AccessCardPanel: React.FC<AccessCardPanelProps> = ({
             </div>
           </div>
 
-          {/* Map Source Toggle: Leaflet + OSM vs Custom Image */}
+          {/* Map source: simple pin map, or an uploaded map image (recommended for an accurate map) */}
           <div className="bg-[#131924] border border-[#242f40] rounded-lg p-3 space-y-2.5">
             <span className="text-xs font-semibold text-[#CBD5E1] block">地図の表示方法</span>
             <div className="grid grid-cols-2 gap-2 text-xs">
@@ -162,15 +161,15 @@ export const AccessCardPanel: React.FC<AccessCardPanelProps> = ({
               >
                 <div className="font-semibold flex items-center space-x-1">
                   <Compass className="w-3.5 h-3.5" />
-                  <span>Leaflet + OSM</span>
+                  <span>簡易地図</span>
                 </div>
-                <div className="text-[10px] mt-0.5 opacity-80">緯度経度からピン生成</div>
+                <div className="text-[10px] mt-0.5 opacity-80">ピンと座標のみ（道路は表示されません）</div>
               </button>
 
               <button
                 onClick={() => {
                   handleUpdateActiveCard({ mapMode: 'custom_image' });
-                  mapUploadRef.current?.click();
+                  if (!activeCard.customMapDataUrl) mapUploadRef.current?.click();
                 }}
                 className={`p-2 rounded border text-left transition-all ${
                   activeCard.mapMode === 'custom_image'
@@ -180,9 +179,9 @@ export const AccessCardPanel: React.FC<AccessCardPanelProps> = ({
               >
                 <div className="font-semibold flex items-center space-x-1">
                   <ImageIcon className="w-3.5 h-3.5" />
-                  <span>地図画像をアップ</span>
+                  <span>地図画像（推奨）</span>
                 </div>
-                <div className="text-[10px] mt-0.5 opacity-80">自作の案内図/地図画像</div>
+                <div className="text-[10px] mt-0.5 opacity-80">正確な地図・案内図をアップロード</div>
               </button>
               <input
                 ref={mapUploadRef}
@@ -193,136 +192,81 @@ export const AccessCardPanel: React.FC<AccessCardPanelProps> = ({
               />
             </div>
 
-            {/* Coordinates Lat / Lng inputs */}
-            {activeCard.mapMode === 'leaflet' && (
-              <div className="grid grid-cols-2 gap-2 pt-2 border-t border-[#202938] text-xs">
-                <div>
-                  <label className="text-[#8A99AD] block mb-1">緯度 (Latitude)</label>
-                  <input
-                    type="number"
-                    step="0.0001"
-                    value={activeCard.latLng.lat}
-                    onChange={(e) =>
-                      handleUpdateActiveCard({
-                        latLng: { ...activeCard.latLng, lat: parseFloat(e.target.value) || 0 },
-                      })
-                    }
-                    className="w-full bg-[#1b2434] border border-[#2c3d56] rounded px-2 py-1 text-white font-mono"
-                  />
+            {/* Coordinates: the simple map's pin, and the place to open in OpenStreetMap */}
+            <div className="grid grid-cols-2 gap-2 pt-2 border-t border-[#202938] text-xs">
+              <div>
+                <label className="text-[#8A99AD] block mb-1">緯度 (Latitude)</label>
+                <input
+                  type="number"
+                  step="0.0001"
+                  value={activeCard.latLng.lat}
+                  onChange={(e) =>
+                    handleUpdateActiveCard({
+                      latLng: { ...activeCard.latLng, lat: parseFloat(e.target.value) || 0 },
+                    })
+                  }
+                  className="w-full bg-[#1b2434] border border-[#2c3d56] rounded px-2 py-1 text-white font-mono"
+                />
+              </div>
+              <div>
+                <label className="text-[#8A99AD] block mb-1">経度 (Longitude)</label>
+                <input
+                  type="number"
+                  step="0.0001"
+                  value={activeCard.latLng.lng}
+                  onChange={(e) =>
+                    handleUpdateActiveCard({
+                      latLng: { ...activeCard.latLng, lng: parseFloat(e.target.value) || 0 },
+                    })
+                  }
+                  className="w-full bg-[#1b2434] border border-[#2c3d56] rounded px-2 py-1 text-white font-mono"
+                />
+              </div>
+            </div>
+
+            {activeCard.mapMode === 'custom_image' && (
+              <div className="pt-2 border-t border-[#202938] text-xs space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <span className={activeCard.customMapDataUrl ? 'text-[#86efac]' : 'text-amber-300'}>
+                    {activeCard.customMapDataUrl ? '地図画像を使用中' : '地図画像が未設定です'}
+                  </span>
+                  <button
+                    onClick={() => mapUploadRef.current?.click()}
+                    className="px-2 py-0.5 bg-[#1b2533] hover:bg-[#25354a] border border-[#354862] text-[#93c5fd] rounded text-[10px] transition-colors"
+                  >
+                    {activeCard.customMapDataUrl ? '画像を差し替え' : '画像を選択'}
+                  </button>
                 </div>
-                <div>
-                  <label className="text-[#8A99AD] block mb-1">経度 (Longitude)</label>
-                  <input
-                    type="number"
-                    step="0.0001"
-                    value={activeCard.latLng.lng}
-                    onChange={(e) =>
-                      handleUpdateActiveCard({
-                        latLng: { ...activeCard.latLng, lng: parseFloat(e.target.value) || 0 },
-                      })
-                    }
-                    className="w-full bg-[#1b2434] border border-[#2c3d56] rounded px-2 py-1 text-white font-mono"
-                  />
-                </div>
+                <label className="text-[#8A99AD] block">出典表記（地図の右下に表示されます）</label>
+                <input
+                  type="text"
+                  value={activeCard.attribution}
+                  placeholder="© OpenStreetMap contributors"
+                  onChange={(e) => handleUpdateActiveCard({ attribution: e.target.value })}
+                  className="w-full bg-[#1b2434] border border-[#2c3d56] rounded px-2.5 py-1 text-white"
+                />
               </div>
             )}
 
-            <div className="text-[10px] text-gray-400 flex items-center justify-between pt-1">
-              <span className="flex items-center space-x-1">
+            <div className="text-[10px] text-gray-400 bg-[#0f141d] border border-[#1e2634] rounded p-2 leading-relaxed">
+              <div className="flex items-center space-x-1 text-gray-300 mb-0.5">
                 <Check className="w-3 h-3 text-[#22c55e]" />
-                <span>出典表記「{activeCard.attribution}」が自動付加されます</span>
-              </span>
-
-              {/* 1-click Map Snapshot Baker */}
-              <button
-                onClick={() => {
-                  const offCanvas = document.createElement('canvas');
-                  offCanvas.width = 800;
-                  offCanvas.height = 600;
-                  const ctx = offCanvas.getContext('2d');
-                  if (!ctx) return;
-
-                  // High-contrast clean cartographic dark slate style
-                  ctx.fillStyle = '#182029';
-                  ctx.fillRect(0, 0, 800, 600);
-
-                  // Map grid lines
-                  ctx.strokeStyle = 'rgba(212, 175, 55, 0.15)';
-                  ctx.lineWidth = 1;
-                  for (let x = 0; x < 800; x += 50) {
-                    ctx.beginPath();
-                    ctx.moveTo(x, 0);
-                    ctx.lineTo(x, 600);
-                    ctx.stroke();
-                  }
-                  for (let y = 0; y < 600; y += 50) {
-                    ctx.beginPath();
-                    ctx.moveTo(0, y);
-                    ctx.lineTo(800, y);
-                    ctx.stroke();
-                  }
-
-                  // River / roads
-                  ctx.strokeStyle = '#2b4c68';
-                  ctx.lineWidth = 12;
-                  ctx.beginPath();
-                  ctx.moveTo(0, 480);
-                  ctx.bezierCurveTo(240, 500, 460, 280, 800, 320);
-                  ctx.stroke();
-
-                  // Sando Sacred Approach path
-                  ctx.strokeStyle = '#D4AF37';
-                  ctx.lineWidth = 5;
-                  ctx.setLineDash([8, 6]);
-                  ctx.beginPath();
-                  ctx.moveTo(400, 600);
-                  ctx.lineTo(400, 260);
-                  ctx.stroke();
-                  ctx.setLineDash([]);
-
-                  // Shrine Sanctuary Torii Pin
-                  ctx.fillStyle = '#C84B31';
-                  ctx.beginPath();
-                  ctx.arc(400, 240, 22, 0, Math.PI * 2);
-                  ctx.fill();
-                  ctx.strokeStyle = '#FFFFFF';
-                  ctx.lineWidth = 3;
-                  ctx.stroke();
-
-                  ctx.fillStyle = '#FFFFFF';
-                  ctx.font = 'bold 22px sans-serif';
-                  ctx.textAlign = 'center';
-                  ctx.fillText('⛩️', 400, 248);
-
-                  // Shrine name tag on map
-                  ctx.fillStyle = 'rgba(11, 14, 18, 0.88)';
-                  ctx.fillRect(260, 150, 280, 48);
-                  ctx.strokeStyle = '#D4AF37';
-                  ctx.lineWidth = 1.5;
-                  ctx.strokeRect(260, 150, 280, 48);
-                  ctx.fillStyle = '#F7E7B4';
-                  ctx.font = 'bold 18px "Shippori Mincho", serif';
-                  ctx.fillText(activeCard.sanctuaryName.ja || '神社境内', 400, 182);
-
-                  // Coordinates footer
-                  ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
-                  ctx.font = '12px monospace';
-                  ctx.textAlign = 'left';
-                  ctx.fillText(`📍 ${activeCard.latLng.lat.toFixed(4)}°N, ${activeCard.latLng.lng.toFixed(4)}°E`, 18, 580);
-                  ctx.textAlign = 'right';
-                  ctx.fillText(activeCard.attribution || '© OpenStreetMap contributors', 782, 580);
-
-                  const dataUrl = offCanvas.toDataURL('image/png');
-                  handleUpdateActiveCard({
-                    mapMode: 'custom_image',
-                    customMapDataUrl: dataUrl,
-                  });
-                }}
-                className="px-2 py-0.5 bg-[#1b2533] hover:bg-[#25354a] border border-[#354862] text-[#93c5fd] rounded text-[10px] transition-colors"
-                title="現在の緯度経度から高解像度の地図カード画像を生成して固定"
-              >
-                🗺️ 地図を確定保存
-              </button>
+                <span>正確な地図を使う手順</span>
+              </div>
+              <ol className="list-decimal pl-4 space-y-0.5">
+                <li>
+                  <a
+                    href={`https://www.openstreetmap.org/?mlat=${activeCard.latLng.lat}&mlon=${activeCard.latLng.lng}#map=16/${activeCard.latLng.lat}/${activeCard.latLng.lng}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-[#93c5fd] underline hover:text-white"
+                  >
+                    OpenStreetMapでこの座標を開く
+                  </a>
+                </li>
+                <li>右側の「共有」→「画像」から地図をダウンロード</li>
+                <li>「地図画像（推奨）」でアップロード（出典表記「© OpenStreetMap contributors」を残してください）</li>
+              </ol>
             </div>
           </div>
 

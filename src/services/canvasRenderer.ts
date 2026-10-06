@@ -11,6 +11,7 @@ import {
   AccessCardItem,
   SupportedLanguage,
 } from '../types';
+import { audioEngine } from './audioEngine';
 
 export interface ExportRenderOptions {
   /** Frame decoded from the active video clip for this timestamp (null if none could be decoded) */
@@ -121,6 +122,7 @@ export class CanvasRenderer {
       vid.playsInline = true;
       vid.src = url;
       this.videoCache.set(id, vid);
+      audioEngine.connectMediaElement(vid); // so the level meter includes the clip's own sound
     }
     return vid;
   }
@@ -214,7 +216,7 @@ export class CanvasRenderer {
         }
       }
 
-      // 7. Render Access Guide Card (Leaflet map or custom map + info)
+      // 7. Render Access Guide Card (simple pin map or uploaded map image + info)
       const activeAccessCard = project.accessCards.find(
         (a) => currentTime >= a.startTime && currentTime < a.startTime + a.duration
       );
@@ -645,7 +647,7 @@ export class CanvasRenderer {
   }
 
   /**
-   * 4. アクセス案内カード (Leaflet map or custom map + shrine directions)
+   * 4. アクセス案内カード (simple pin map or uploaded map image + shrine directions)
    */
   private renderAccessCard(
     ctx: CanvasRenderingContext2D,
@@ -706,16 +708,18 @@ export class CanvasRenderer {
       ctx.translate(mapX, mapY);
       this.drawCover(ctx, mapImg, mapImg.naturalWidth, mapImg.naturalHeight, mapW, mapH);
       ctx.restore();
+
+      // Credit for the uploaded map (e.g. © OpenStreetMap contributors)
+      if (card.attribution) {
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.75)';
+        ctx.font = `12px sans-serif`;
+        ctx.textAlign = 'right';
+        ctx.fillText(card.attribution, mapX + mapW - 10, mapY + mapH - 10);
+      }
     } else {
-      // Draw atmospheric stylized OpenStreetMap proxy tile with pin
+      // Simple decorative map with a pin at the coordinates (no map data, so no map credit)
       this.renderStylizedMapProxy(ctx, mapX, mapY, mapW, mapH, card.latLng);
     }
-
-    // Map attribution
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
-    ctx.font = `12px sans-serif`;
-    ctx.textAlign = 'right';
-    ctx.fillText(card.attribution || '© OpenStreetMap contributors', mapX + mapW - 10, mapY + mapH - 10);
 
     // Access Information details
     const infoX = isLandscape ? cardX + 650 : cardX + 30;
@@ -752,7 +756,7 @@ export class CanvasRenderer {
   }
 
   /**
-   * Stylized map representation for Leaflet/OSM
+   * Simple decorative map: grid, a river line, and a pin with the coordinates (not real map data)
    */
   private renderStylizedMapProxy(
     ctx: CanvasRenderingContext2D,

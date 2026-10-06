@@ -122,7 +122,7 @@ export interface AccessCardItem {
   parking: LocalizedText;
   visitingHours: LocalizedText;
   
-  mapMode: 'leaflet' | 'custom_image';
+  mapMode: 'leaflet' | 'custom_image'; // 'leaflet' = 簡易地図（保存データ互換のため名前はそのまま）
   customMapDataUrl?: string;
   attribution: string;
 }
@@ -139,7 +139,6 @@ export interface AudioTrackItem {
   blobKey?: string;
   isRecorded?: boolean;
   waveform?: number[]; // Normalized waveform peak heights (0.0 to 1.0)
-  estimatedLufs?: number; // Estimated loudness in LUFS (e.g. -14.0)
   trimStart?: number; // Offset from start of source audio (seconds)
   fadeInSec?: number; // Fade in duration (seconds)
   fadeOutSec?: number; // Fade out duration (seconds)

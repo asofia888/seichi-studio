@@ -1,6 +1,7 @@
 import React, { useRef, useEffect, useState } from 'react';
 import { ProjectData, SupportedLanguage } from '../types';
 import { canvasRenderer } from '../services/canvasRenderer';
+import { audioEngine } from '../services/audioEngine';
 import {
   Play,
   Pause,
@@ -41,9 +42,8 @@ export const VideoPreview: React.FC<VideoPreviewProps> = ({
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
-  // Simulated live VU meter level states (Left & Right channel)
-  const [vuLevelL, setVuLevelL] = useState<number>(0);
-  const [vuLevelR, setVuLevelR] = useState<number>(0);
+  // Measured output level (dBFS) of what is actually playing
+  const [levels, setLevels] = useState({ left: -Infinity, right: -Infinity, peak: -Infinity });
 
   // Re-render canvas whenever currentTime, project, or language changes
   useEffect(() => {
@@ -53,50 +53,31 @@ export const VideoPreview: React.FC<VideoPreviewProps> = ({
     canvasRenderer.renderFrame(ctx, project, currentTime, previewLang, isPlaying);
   }, [currentTime, project, previewLang, isPlaying]);
 
-  // Audio VU Meter animation loop
+  // Level meter: read the engine's output analysers every frame while playing
   useEffect(() => {
     if (!isPlaying) {
-      setVuLevelL(0);
-      setVuLevelR(0);
+      setLevels({ left: -Infinity, right: -Infinity, peak: -Infinity });
       return;
     }
-
     let frameId: number;
-    const updateVUMeter = () => {
-      // Find active tracks at current time
-      const activeAudio = project.audioTracks.filter(
-        (t) => currentTime >= t.startTime && currentTime < t.startTime + t.duration
-      );
-
-      const isNarrationSpeaking = activeAudio.some((t) => t.type === 'narration');
-
-      let combinedVol = 0;
-      for (const t of activeAudio) {
-        if (project.mutedTracks?.[t.type]) continue;
-        if (t.type === 'bgm' && isNarrationSpeaking && t.autoDucking?.enabled !== false) {
-          combinedVol += t.volume * (t.autoDucking?.duckVolume ?? 0.25);
-        } else {
-          combinedVol += t.volume;
-        }
-      }
-
-      // Add gentle dynamic rhythm fluctuations
-      const baseLevel = Math.min(1.0, combinedVol * 0.75);
-      const jitterL = Math.sin(Date.now() * 0.015) * 0.15 + (Math.random() - 0.5) * 0.08;
-      const jitterR = Math.cos(Date.now() * 0.017) * 0.15 + (Math.random() - 0.5) * 0.08;
-
-      const levelL = Math.max(0, Math.min(0.98, baseLevel + jitterL));
-      const levelR = Math.max(0, Math.min(0.98, baseLevel + jitterR));
-
-      setVuLevelL(levelL);
-      setVuLevelR(levelR);
-
-      frameId = requestAnimationFrame(updateVUMeter);
+    const update = () => {
+      setLevels(audioEngine.getOutputLevels());
+      frameId = requestAnimationFrame(update);
     };
-
-    frameId = requestAnimationFrame(updateVUMeter);
+    frameId = requestAnimationFrame(update);
     return () => cancelAnimationFrame(frameId);
-  }, [isPlaying, currentTime, project.audioTracks, project.mutedTracks]);
+  }, [isPlaying]);
+
+  // -60 dBFS (empty) to 0 dBFS (full)
+  const meterFill = (db: number) => Math.max(0, Math.min(1, (db + 60) / 60));
+  const meterColor = (db: number) =>
+    db > -6
+      ? 'linear-gradient(to right, #10B981, #F59E0B, #EF4444)'
+      : db > -18
+      ? 'linear-gradient(to right, #10B981, #F59E0B)'
+      : '#10B981';
+  const isClipping = levels.peak > -1;
+  const loudestDb = Math.max(levels.left, levels.right);
 
   const formatTime = (secs: number) => {
     const mins = Math.floor(secs / 60);
@@ -217,13 +198,8 @@ export const VideoPreview: React.FC<VideoPreviewProps> = ({
               <div
                 className="h-full transition-all duration-75 rounded-full"
                 style={{
-                  width: `${vuLevelL * 100}%`,
-                  background:
-                    vuLevelL > 0.85
-                      ? 'linear-gradient(to right, #10B981, #F59E0B, #EF4444)'
-                      : vuLevelL > 0.65
-                      ? 'linear-gradient(to right, #10B981, #F59E0B)'
-                      : '#10B981',
+                  width: `${meterFill(levels.left) * 100}%`,
+                  background: meterColor(levels.left),
                 }}
               />
             </div>
@@ -232,19 +208,17 @@ export const VideoPreview: React.FC<VideoPreviewProps> = ({
               <div
                 className="h-full transition-all duration-75 rounded-full"
                 style={{
-                  width: `${vuLevelR * 100}%`,
-                  background:
-                    vuLevelR > 0.85
-                      ? 'linear-gradient(to right, #10B981, #F59E0B, #EF4444)'
-                      : vuLevelR > 0.65
-                      ? 'linear-gradient(to right, #10B981, #F59E0B)'
-                      : '#10B981',
+                  width: `${meterFill(levels.right) * 100}%`,
+                  background: meterColor(levels.right),
                 }}
               />
             </div>
           </div>
-          <span className="text-[9px] text-gray-400 font-mono w-7 text-right">
-            {isPlaying ? `${Math.round((vuLevelL - 1) * 36)}dB` : '-∞'}
+          <span
+            className={`text-[9px] font-mono w-8 text-right ${isClipping ? 'text-red-400 font-bold' : 'text-gray-400'}`}
+            title={isClipping ? '音が割れています（ピークが0dBFS付近）。音量を下げてください。' : '出力レベル (dBFS)'}
+          >
+            {Number.isFinite(loudestDb) && loudestDb > -60 ? `${Math.round(loudestDb)}dB` : '-∞'}
           </span>
         </div>
 

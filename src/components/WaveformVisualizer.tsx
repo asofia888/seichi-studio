@@ -17,11 +17,15 @@ export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({
   duckVolume = 0.25,
   className = '',
 }) => {
-  // If no waveform provided, generate 40 bars fallback
-  const peaks = waveform && waveform.length > 0 ? waveform : [
-    0.4, 0.6, 0.8, 0.5, 0.3, 0.7, 0.9, 0.6, 0.4, 0.2, 0.5, 0.8, 0.7, 0.4,
-    0.3, 0.6, 0.8, 0.9, 0.5, 0.4, 0.7, 0.8, 0.6, 0.3, 0.5, 0.7, 0.6, 0.4,
-  ];
+  // No analysed sound (e.g. a track without an audio file): a flat line, not a made-up waveform
+  if (!waveform || waveform.length === 0) {
+    return (
+      <div className={`flex items-center h-full w-full px-1 pointer-events-none select-none ${className}`}>
+        <div className="w-full h-px opacity-50" style={{ backgroundColor: color }} />
+      </div>
+    );
+  }
+  const peaks = waveform;
 
   const effectiveVolMultiplier = isDucked ? (duckVolume ?? 0.25) * volume : volume;
 

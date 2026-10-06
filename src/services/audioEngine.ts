@@ -1,7 +1,7 @@
 /**
  * Web Audio Engine for Sacred Sanctuary Studio
- * Supports multi-track mixing (Narration, Ambience, BGM),
- * Microphone recording, and automatic BGM Ducking.
+ * Supports multi-track playback (Narration, Ambience, BGM), automatic BGM ducking,
+ * microphone recording, a real output level meter, and loudness measurement (LUFS).
  */
 import { AudioTrackItem } from '../types';
 
@@ -17,14 +17,73 @@ export function isNarrationAudibleAt(
   );
 }
 
+/**
+ * Integrated loudness of a sound file per ITU-R BS.1770 / EBU R128: K-weighting, 400 ms blocks
+ * with 75% overlap, absolute gate at -70 LUFS and relative gate at -10 LU.
+ */
+async function measureIntegratedLoudness(url: string): Promise<number | null> {
+  const data = await (await fetch(url)).arrayBuffer();
+  // decodeAudioData resamples to the context's rate, so the audio is always 48 kHz here,
+  // which is the rate the standard's K-weighting coefficients are published for
+  const SAMPLE_RATE = 48000;
+  const buffer = await new OfflineAudioContext(1, 1, SAMPLE_RATE).decodeAudioData(data);
+
+  const ctx = new OfflineAudioContext(buffer.numberOfChannels, buffer.length, SAMPLE_RATE);
+  const source = ctx.createBufferSource();
+  source.buffer = buffer;
+  // K-weighting, BS.1770-4 Table 1 (pre-filter) and Table 2 (RLB high-pass) at 48 kHz
+  const preFilter = ctx.createIIRFilter(
+    [1.53512485958697, -2.69169618940638, 1.19839281085285],
+    [1.0, -1.69065929318241, 0.73248077421585]
+  );
+  const rlbFilter = ctx.createIIRFilter([1.0, -2.0, 1.0], [1.0, -1.99004745483398, 0.99007225036621]);
+  source.connect(preFilter).connect(rlbFilter).connect(ctx.destination);
+  source.start();
+  const weighted = await ctx.startRendering();
+
+  // Mean square per 100 ms step; a 400 ms block is four consecutive steps
+  const step = Math.round(weighted.sampleRate * 0.1);
+  const stepCount = Math.floor(weighted.length / step);
+  const stepPower = new Float64Array(stepCount);
+  for (let c = 0; c < weighted.numberOfChannels; c++) {
+    const samples = weighted.getChannelData(c);
+    for (let s = 0; s < stepCount; s++) {
+      let sum = 0;
+      for (let i = s * step; i < (s + 1) * step; i++) sum += samples[i] * samples[i];
+      stepPower[s] += sum / step;
+    }
+  }
+  // A mono file is played on both speakers, which adds 3 dB compared with measuring one channel
+  const channelFactor = weighted.numberOfChannels === 1 ? 2 : 1;
+
+  const blockPowers: number[] = [];
+  for (let s = 0; s + 4 <= stepCount; s++) {
+    blockPowers.push(((stepPower[s] + stepPower[s + 1] + stepPower[s + 2] + stepPower[s + 3]) / 4) * channelFactor);
+  }
+  const toLufs = (power: number) => -0.691 + 10 * Math.log10(power);
+  const mean = (values: number[]) => values.reduce((a, b) => a + b, 0) / values.length;
+
+  const aboveAbsolute = blockPowers.filter((p) => p > 0 && toLufs(p) > -70);
+  if (aboveAbsolute.length === 0) return null; // silent (or shorter than 0.4 s)
+  const relativeGate = toLufs(mean(aboveAbsolute)) - 10;
+  const gated = aboveAbsolute.filter((p) => toLufs(p) > relativeGate);
+  return Math.round(toLufs(mean(gated)) * 10) / 10;
+}
+
 class AudioEngine {
   private ctx: AudioContext | null = null;
   private masterGain: GainNode | null = null;
 
   // Active audio elements for playback
   private audioElements: Map<string, HTMLAudioElement> = new Map();
-  // Procedural synthesizer nodes for sample serene sound
-  private synthNodes: { stop: () => void } | null = null;
+
+  // Output level meter: every media element is routed through masterGain, which feeds these analysers
+  private analysers: { left: AnalyserNode; right: AnalyserNode } | null = null;
+  private levelBuffer = new Float32Array(2048);
+  private connectedElements = new WeakSet<HTMLMediaElement>();
+
+  // Measured loudness per sound file URL
+  private loudnessCache = new Map<string, Promise<number | null>>();
 
   // MediaRecorder for mic recording
   private mediaRecorder: MediaRecorder | null = null;
@@ -39,6 +98,15 @@ class AudioEngine {
       this.masterGain = this.ctx.createGain();
       this.masterGain.gain.value = 1.0;
       this.masterGain.connect(this.ctx.destination);
+
+      const splitter = this.ctx.createChannelSplitter(2);
+      const left = this.ctx.createAnalyser();
+      const right = this.ctx.createAnalyser();
+      left.fftSize = right.fftSize = this.levelBuffer.length;
+      this.masterGain.connect(splitter);
+      splitter.connect(left, 0);
+      splitter.connect(right, 1);
+      this.analysers = { left, right };
     }
     if (this.ctx.state === 'suspended') {
       this.ctx.resume();
@@ -68,6 +136,7 @@ class AudioEngine {
         el = new Audio(track.dataUrl);
         el.loop = track.type === 'ambience' || track.type === 'bgm';
         this.audioElements.set(track.id, el);
+        this.connectMediaElement(el);
       }
 
       const isInside = currentTime >= track.startTime && currentTime < track.startTime + track.duration;
@@ -119,70 +188,59 @@ class AudioEngine {
         this.audioElements.delete(id);
       }
     }
-
-    // Procedural peaceful ambient sound generator if no audio tracks exist
-    if (audioTracks.length === 0 && isPlaying) {
-      this.startPeacefulDrone();
-    } else {
-      this.stopPeacefulDrone();
-    }
   }
 
   public pauseAll() {
     for (const el of this.audioElements.values()) {
       el.pause();
     }
-    this.stopPeacefulDrone();
+  }
+
+  /** Route a media element's sound through the engine so the level meter hears it */
+  public connectMediaElement(el: HTMLMediaElement) {
+    this.init();
+    if (!this.ctx || !this.masterGain || this.connectedElements.has(el)) return;
+    try {
+      this.ctx.createMediaElementSource(el).connect(this.masterGain);
+      this.connectedElements.add(el);
+    } catch (e) {
+      console.warn('Could not route media element through the level meter:', e);
+    }
+  }
+
+  /** Current output level per channel in dBFS: RMS for the meter and peak for clipping (-Infinity when silent) */
+  public getOutputLevels(): { left: number; right: number; peak: number } {
+    if (!this.analysers) return { left: -Infinity, right: -Infinity, peak: -Infinity };
+    let peak = 0;
+    const rmsDb = (analyser: AnalyserNode) => {
+      analyser.getFloatTimeDomainData(this.levelBuffer);
+      let sum = 0;
+      for (const x of this.levelBuffer) {
+        sum += x * x;
+        peak = Math.max(peak, Math.abs(x));
+      }
+      const rms = Math.sqrt(sum / this.levelBuffer.length);
+      return rms > 0 ? 20 * Math.log10(rms) : -Infinity;
+    };
+    const left = rmsDb(this.analysers.left);
+    const right = rmsDb(this.analysers.right);
+    return { left, right, peak: peak > 0 ? 20 * Math.log10(peak) : -Infinity };
   }
 
   /**
-   * Procedural peaceful shrine sound (Singing bowl / gentle bell drone)
+   * Integrated loudness (LUFS) of a sound file played at 100% volume, or null if it cannot be
+   * decoded or is silent. Results are cached per URL.
    */
-  private startPeacefulDrone() {
-    if (this.synthNodes || !this.ctx) return;
-    try {
-      const osc1 = this.ctx.createOscillator();
-      const osc2 = this.ctx.createOscillator();
-      const filter = this.ctx.createBiquadFilter();
-      const gain = this.ctx.createGain();
-
-      osc1.type = 'sine';
-      osc1.frequency.setValueAtTime(144, this.ctx.currentTime); // D3 (serene key)
-      osc2.type = 'triangle';
-      osc2.frequency.setValueAtTime(216, this.ctx.currentTime); // A3 harmonic
-
-      filter.type = 'lowpass';
-      filter.frequency.setValueAtTime(450, this.ctx.currentTime);
-
-      gain.gain.setValueAtTime(0.08, this.ctx.currentTime);
-
-      osc1.connect(filter);
-      osc2.connect(filter);
-      filter.connect(gain);
-      if (this.masterGain) gain.connect(this.masterGain);
-
-      osc1.start();
-      osc2.start();
-
-      this.synthNodes = {
-        stop: () => {
-          try {
-            osc1.stop();
-            osc2.stop();
-            osc1.disconnect();
-            osc2.disconnect();
-          } catch {}
-          this.synthNodes = null;
-        },
-      };
-    } catch {}
-  }
-
-  private stopPeacefulDrone() {
-    if (this.synthNodes) {
-      this.synthNodes.stop();
-      this.synthNodes = null;
+  public measureLoudness(url: string): Promise<number | null> {
+    let result = this.loudnessCache.get(url);
+    if (!result) {
+      result = measureIntegratedLoudness(url).catch((e) => {
+        console.warn('Loudness measurement failed:', e);
+        return null;
+      });
+      this.loudnessCache.set(url, result);
     }
+    return result;
   }
 
   /**
@@ -280,141 +338,9 @@ class AudioEngine {
       const max = Math.max(...peaks, 0.01);
       return peaks.map((p) => Math.max(0.12, Math.min(1.0, p / max)));
     } catch (e) {
-      console.warn('Direct decodeAudioData not available for format, fallback to speech pattern:', e);
-      return this.generateSyntheticWaveform('narration', sampleCount);
+      console.warn('Could not decode audio for the waveform display:', e);
+      return []; // no waveform rather than a made-up one
     }
-  }
-
-  /**
-   * Generate natural procedural waveform for presets or audio files
-   */
-  public generateSyntheticWaveform(type: 'bgm' | 'ambience' | 'narration', sampleCount = 60): number[] {
-    const peaks: number[] = [];
-    for (let i = 0; i < sampleCount; i++) {
-      const t = i / sampleCount;
-      if (type === 'narration') {
-        const isPause = (i % 14 > 10) || (i % 23 > 19);
-        if (isPause) {
-          peaks.push(0.08 + Math.random() * 0.05);
-        } else {
-          const envelope = 0.35 + 0.5 * Math.sin(t * Math.PI * 4);
-          const noise = Math.random() * 0.35;
-          peaks.push(Math.max(0.2, Math.min(0.95, Math.abs(envelope) + noise)));
-        }
-      } else if (type === 'bgm') {
-        const wave = 0.45 + 0.3 * Math.sin(t * Math.PI * 2) + 0.15 * Math.sin(t * Math.PI * 6);
-        peaks.push(Math.max(0.25, Math.min(0.92, wave + Math.random() * 0.1)));
-      } else {
-        const wave = 0.35 + 0.15 * Math.sin(t * Math.PI * 3);
-        peaks.push(Math.max(0.2, Math.min(0.7, wave + Math.random() * 0.12)));
-      }
-    }
-    return peaks;
-  }
-  /**
-   * Estimates integrated loudness (LUFS) of a track based on waveform and volume
-   */
-  public calculateLoudness(track: AudioTrackItem): { rms: number; peak: number; estimatedLufs: number } {
-    const peaks = track.waveform && track.waveform.length > 0
-      ? track.waveform
-      : [0.4, 0.5, 0.6, 0.5, 0.4];
-
-    let sumSq = 0;
-    let maxPeak = 0;
-    for (const p of peaks) {
-      sumSq += p * p;
-      if (p > maxPeak) maxPeak = p;
-    }
-    const rms = Math.sqrt(sumSq / peaks.length);
-    const effectiveRms = rms * Math.max(0.01, track.volume);
-
-    // Approximate LUFS mapping based on full-scale RMS
-    const rawLufs = 20 * Math.log10(Math.max(0.001, effectiveRms)) - 2.0;
-    const estimatedLufs = Math.max(-45, Math.min(-6, Math.round(rawLufs * 10) / 10));
-
-    return {
-      rms: Math.round(effectiveRms * 100) / 100,
-      peak: Math.round(maxPeak * track.volume * 100) / 100,
-      estimatedLufs,
-    };
-  }
-
-  /**
-   * Normalizes a single track to a target LUFS level
-   */
-  public normalizeTrack(
-    track: AudioTrackItem,
-    targetLufs: number
-  ): { updatedTrack: AudioTrackItem; gainDeltaDb: number; prevLufs: number; newLufs: number } {
-    const current = this.calculateLoudness(track);
-    const gainDeltaDb = targetLufs - current.estimatedLufs;
-
-    // Linear multiplier change: 10^(gainDeltaDb / 20)
-    const multiplier = Math.pow(10, gainDeltaDb / 20);
-    const newVolume = Math.max(0.05, Math.min(1.0, Math.round(track.volume * multiplier * 100) / 100));
-
-    const updatedTrack: AudioTrackItem = {
-      ...track,
-      volume: newVolume,
-      estimatedLufs: targetLufs,
-    };
-
-    const newCalculated = this.calculateLoudness(updatedTrack);
-
-    return {
-      updatedTrack: { ...updatedTrack, estimatedLufs: newCalculated.estimatedLufs },
-      gainDeltaDb: Math.round(gainDeltaDb * 10) / 10,
-      prevLufs: current.estimatedLufs,
-      newLufs: newCalculated.estimatedLufs,
-    };
-  }
-
-  /**
-   * Normalizes all audio tracks in the project to the selected standard loudness profile
-   */
-  public normalizeAllTracks(
-    tracks: AudioTrackItem[],
-    profileKey: 'youtube' | 'sacred_calm' | 'shorts' = 'youtube'
-  ): {
-    updatedTracks: AudioTrackItem[];
-    summary: { trackName: string; type: string; oldVol: number; newVol: number; oldLufs: number; newLufs: number; gainDeltaDb: number }[];
-  } {
-    const profile = LOUDNESS_PROFILES[profileKey];
-    const summary: { trackName: string; type: string; oldVol: number; newVol: number; oldLufs: number; newLufs: number; gainDeltaDb: number }[] = [];
-
-    const updatedTracks = tracks.map((track) => {
-      let targetLufs = profile.narrationTargetLufs;
-      if (track.type === 'bgm') targetLufs = profile.bgmTargetLufs;
-      if (track.type === 'ambience') targetLufs = profile.ambienceTargetLufs;
-
-      const normResult = this.normalizeTrack(track, targetLufs);
-
-      let finalTrack = normResult.updatedTrack;
-      if (finalTrack.type === 'bgm') {
-        finalTrack = {
-          ...finalTrack,
-          autoDucking: {
-            enabled: finalTrack.autoDucking?.enabled ?? true,
-            duckVolume: profile.defaultDuckingVolume,
-            fadeSec: finalTrack.autoDucking?.fadeSec ?? 0.4,
-          },
-        };
-      }
-
-      summary.push({
-        trackName: track.name,
-        type: track.type,
-        oldVol: track.volume,
-        newVol: finalTrack.volume,
-        oldLufs: normResult.prevLufs,
-        newLufs: normResult.newLufs,
-        gainDeltaDb: normResult.gainDeltaDb,
-      });
-
-      return finalTrack;
-    });
-
-    return { updatedTracks, summary };
   }
 }
 

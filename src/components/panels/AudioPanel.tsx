@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { ProjectData, AudioTrackItem } from '../../types';
 import { audioEngine, LOUDNESS_PROFILES, LoudnessProfile } from '../../services/audioEngine';
 import { saveMediaBlob } from '../../services/storage';
@@ -71,10 +71,48 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({
     project.audioTracks[0] ||
     null;
 
-  // Loudness calculations for real-time monitoring
-  const bgmLoudness = bgmTrack ? audioEngine.calculateLoudness(bgmTrack) : null;
-  const ambienceLoudness = ambienceTrack ? audioEngine.calculateLoudness(ambienceTrack) : null;
-  const primaryNarrLoudness = narrationTracks.length > 0 ? audioEngine.calculateLoudness(narrationTracks[0]) : null;
+  // Measured loudness of each sound file at 100% volume (LUFS), keyed by file URL
+  const [measuredLufs, setMeasuredLufs] = useState<Record<string, number | null>>({});
+  useEffect(() => {
+    let alive = true;
+    for (const t of project.audioTracks) {
+      const url = t.dataUrl;
+      if (!url) continue;
+      audioEngine.measureLoudness(url).then((lufs) => {
+        if (alive) setMeasuredLufs((m) => (m[url] === lufs ? m : { ...m, [url]: lufs }));
+      });
+    }
+    return () => {
+      alive = false;
+    };
+  }, [project.audioTracks]);
+
+  /** Loudness of a track as it plays (file loudness adjusted by its volume), or why it is unavailable */
+  const trackLoudness = (t?: AudioTrackItem): { lufs: number | null; label: string } => {
+    if (!t) return { lufs: null, label: '未設定' };
+    if (!t.dataUrl) return { lufs: null, label: '音声なし' };
+    const source = measuredLufs[t.dataUrl];
+    if (source === undefined) return { lufs: null, label: '測定中…' };
+    if (source === null) return { lufs: null, label: '測定不可' };
+    if (t.volume <= 0) return { lufs: null, label: '無音' };
+    const lufs = Math.round((source + 20 * Math.log10(t.volume)) * 10) / 10;
+    return { lufs, label: `${lufs} LUFS` };
+  };
+
+  /** Volume that brings a track to the target loudness (at most 100%), or null if it has not been measured */
+  const volumeForTarget = (t: AudioTrackItem, targetLufs: number) => {
+    const source = t.dataUrl ? measuredLufs[t.dataUrl] : undefined;
+    if (typeof source !== 'number') return null;
+    const volume = Math.pow(10, (targetLufs - source) / 20);
+    return { volume: Math.round(Math.min(1, volume) * 100) / 100, capped: volume > 1 };
+  };
+
+  const dbChange = (oldVol: number, newVol: number) =>
+    oldVol > 0 && newVol > 0 ? Math.round(20 * Math.log10(newVol / oldVol) * 10) / 10 : 0;
+
+  const bgmLoudness = trackLoudness(bgmTrack);
+  const ambienceLoudness = trackLoudness(ambienceTrack);
+  const primaryNarrLoudness = trackLoudness(narrationTracks.find((t) => t.dataUrl) ?? narrationTracks[0]);
 
   const handleUpdateTrack = (id: string, patch: Partial<AudioTrackItem>) => {
     const updated = project.audioTracks.map((t) =>
@@ -96,37 +134,81 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({
     });
   };
 
-  // Perform full-project loudness normalization
+  // Set every measured track to the selected profile's loudness target
   const handleNormalizeAll = () => {
-    const result = audioEngine.normalizeAllTracks(project.audioTracks, selectedProfile);
-    onUpdateProject({
-      ...project,
-      audioTracks: result.updatedTracks,
-      updatedAt: new Date().toISOString(),
+    const summary: { trackName: string; type: string; oldVol: number; newVol: number; gainDeltaDb: number }[] = [];
+    let skipped = 0;
+    let capped = 0;
+    const updatedTracks = project.audioTracks.map((track) => {
+      const target =
+        track.type === 'bgm'
+          ? currentProfile.bgmTargetLufs
+          : track.type === 'ambience'
+          ? currentProfile.ambienceTargetLufs
+          : currentProfile.narrationTargetLufs;
+      const result = volumeForTarget(track, target);
+      let updated = track;
+      if (result) {
+        if (result.capped) capped++;
+        updated = { ...track, volume: result.volume };
+        summary.push({
+          trackName: track.name,
+          type: track.type,
+          oldVol: track.volume,
+          newVol: result.volume,
+          gainDeltaDb: dbChange(track.volume, result.volume),
+        });
+      } else {
+        skipped++;
+      }
+      if (updated.type === 'bgm') {
+        updated = {
+          ...updated,
+          autoDucking: {
+            enabled: updated.autoDucking?.enabled ?? true,
+            duckVolume: currentProfile.defaultDuckingVolume,
+            fadeSec: updated.autoDucking?.fadeSec ?? 0.4,
+          },
+        };
+      }
+      return updated;
     });
 
-    setRecentSummary(result.summary);
-    setNormalizationNotice(
-      `【${currentProfile.name}】基準に全トラックの音量を自動補正しました！`
-    );
-    setTimeout(() => setNormalizationNotice(null), 5000);
-  };
-
-  // Perform single track normalization
-  const handleNormalizeSingleTrack = (trackId: string, targetLufs: number) => {
-    const track = project.audioTracks.find((t) => t.id === trackId);
-    if (!track) return;
-    const result = audioEngine.normalizeTrack(track, targetLufs);
-    const updatedTracks = project.audioTracks.map((t) => (t.id === trackId ? result.updatedTrack : t));
     onUpdateProject({
       ...project,
       audioTracks: updatedTracks,
       updatedAt: new Date().toISOString(),
     });
 
-    const sign = result.gainDeltaDb >= 0 ? `+${result.gainDeltaDb}` : `${result.gainDeltaDb}`;
+    setRecentSummary(summary);
+    const notes = [
+      skipped > 0 ? `${skipped}件は音声ファイルがない・測定中のため対象外` : '',
+      capped > 0 ? `${capped}件は音源が小さいため100%で頭打ち` : '',
+    ].filter(Boolean);
     setNormalizationNotice(
-      `「${track.name}」を目標値 ${targetLufs} LUFS に自動補正 (${sign} dB / 音量 ${Math.round(result.updatedTrack.volume * 100)}%)`
+      `【${currentProfile.name}】基準に${summary.length}トラックの音量を補正しました。${notes.length ? `（${notes.join('、')}）` : ''}`
+    );
+    setTimeout(() => setNormalizationNotice(null), 6000);
+  };
+
+  // Set one track to a loudness target
+  const handleNormalizeSingleTrack = (trackId: string, targetLufs: number) => {
+    const track = project.audioTracks.find((t) => t.id === trackId);
+    if (!track) return;
+    const result = volumeForTarget(track, targetLufs);
+    if (!result) {
+      setNormalizationNotice(`「${track.name}」は${trackLoudness(track).label}のため補正できません。`);
+      setTimeout(() => setNormalizationNotice(null), 4000);
+      return;
+    }
+    handleUpdateTrack(trackId, { volume: result.volume });
+
+    const delta = dbChange(track.volume, result.volume);
+    const sign = delta >= 0 ? `+${delta}` : `${delta}`;
+    setNormalizationNotice(
+      `「${track.name}」を目標値 ${targetLufs} LUFS に補正 (${sign} dB / 音量 ${Math.round(result.volume * 100)}%)${
+        result.capped ? '。音源が小さいため100%で頭打ちです' : ''
+      }`
     );
     setTimeout(() => setNormalizationNotice(null), 4000);
   };
@@ -232,7 +314,7 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({
         {/* Live LUFS Balance Levels Indicator */}
         <div className="bg-[#0c1017] p-2.5 rounded-lg border border-[#1f2837] space-y-2 text-xs">
           <div className="flex items-center justify-between text-[11px] text-gray-400 border-b border-[#1b2330] pb-1">
-            <span>現在の推定音量レベル (LUFS)</span>
+            <span>測定ラウドネス（音量反映後・ITU-R BS.1770）</span>
             <span className="text-[10px] text-[#93C5FD]">基準目標</span>
           </div>
 
@@ -244,7 +326,7 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({
                 <span>主音声 (ナレーション)</span>
               </span>
               <span className="font-mono text-gray-300">
-                {primaryNarrLoudness ? `${primaryNarrLoudness.estimatedLufs} LUFS` : '未録音'}
+                {primaryNarrLoudness.label}
                 <span className="text-[#64748B] ml-1.5 font-normal">/ 目標 {currentProfile.narrationTargetLufs} LUFS</span>
               </span>
             </div>
@@ -252,7 +334,7 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({
               <div
                 className="bg-red-500 h-full transition-all duration-300"
                 style={{
-                  width: `${Math.min(100, Math.max(5, ((primaryNarrLoudness?.estimatedLufs ?? -30) + 40) * 3))}%`,
+                  width: `${Math.min(100, Math.max(5, ((primaryNarrLoudness.lufs ?? -40) + 40) * 3))}%`,
                 }}
               />
             </div>
@@ -266,7 +348,7 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({
                 <span>BGM (雅楽・瞑想旋律)</span>
               </span>
               <span className="font-mono text-gray-300">
-                {bgmLoudness ? `${bgmLoudness.estimatedLufs} LUFS` : '無効'}
+                {bgmLoudness.label}
                 <span className="text-[#64748B] ml-1.5 font-normal">/ 目標 {currentProfile.bgmTargetLufs} LUFS</span>
               </span>
             </div>
@@ -274,7 +356,7 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({
               <div
                 className="bg-indigo-400 h-full transition-all duration-300"
                 style={{
-                  width: `${Math.min(100, Math.max(5, ((bgmLoudness?.estimatedLufs ?? -35) + 40) * 3))}%`,
+                  width: `${Math.min(100, Math.max(5, ((bgmLoudness.lufs ?? -40) + 40) * 3))}%`,
                 }}
               />
             </div>
@@ -288,7 +370,7 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({
                 <span>自然音 (風・せせらぎ)</span>
               </span>
               <span className="font-mono text-gray-300">
-                {ambienceLoudness ? `${ambienceLoudness.estimatedLufs} LUFS` : '無効'}
+                {ambienceLoudness.label}
                 <span className="text-[#64748B] ml-1.5 font-normal">/ 目標 {currentProfile.ambienceTargetLufs} LUFS</span>
               </span>
             </div>
@@ -296,7 +378,7 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({
               <div
                 className="bg-emerald-400 h-full transition-all duration-300"
                 style={{
-                  width: `${Math.min(100, Math.max(5, ((ambienceLoudness?.estimatedLufs ?? -38) + 40) * 3))}%`,
+                  width: `${Math.min(100, Math.max(5, ((ambienceLoudness.lufs ?? -40) + 40) * 3))}%`,
                 }}
               />
             </div>
@@ -790,7 +872,7 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({
           <div className="space-y-2 pt-2 border-t border-[#1f2735]">
             <span className="text-[11px] text-gray-400 block font-medium">録音済みナレーション一覧:</span>
             {narrationTracks.map((narr) => {
-              const narrLoud = audioEngine.calculateLoudness(narr);
+              const narrLoud = trackLoudness(narr);
               return (
                 <div
                   key={narr.id}
@@ -815,7 +897,7 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({
 
                   <div className="flex items-center justify-between text-[11px] text-gray-300">
                     <span className="font-mono text-red-300">
-                      音量: {Math.round(narr.volume * 100)}% ({narrLoud.estimatedLufs} LUFS)
+                      音量: {Math.round(narr.volume * 100)}% ({narrLoud.label})
                     </span>
                     <button
                       onClick={() => handleNormalizeSingleTrack(narr.id, currentProfile.narrationTargetLufs)}
@@ -865,9 +947,7 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({
               <div className="flex justify-between items-center text-gray-300 mb-1">
                 <span>
                   通常時 BGM音量: <span className="font-mono text-[#D4AF37]">{Math.round(bgmTrack.volume * 100)}%</span>
-                  {bgmLoudness && (
-                    <span className="text-[10px] text-gray-400 ml-1.5 font-mono">({bgmLoudness.estimatedLufs} LUFS)</span>
-                  )}
+                  <span className="text-[10px] text-gray-400 ml-1.5 font-mono">({bgmLoudness.label})</span>
                 </span>
                 <button
                   onClick={() => handleNormalizeSingleTrack(bgmTrack.id, currentProfile.bgmTargetLufs)}
@@ -978,9 +1058,7 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({
             <div className="flex justify-between items-center text-gray-300">
               <span>
                 環境音音量: <span className="font-mono text-emerald-400">{Math.round(ambienceTrack.volume * 100)}%</span>
-                {ambienceLoudness && (
-                  <span className="text-[10px] text-gray-400 ml-1.5 font-mono">({ambienceLoudness.estimatedLufs} LUFS)</span>
-                )}
+                <span className="text-[10px] text-gray-400 ml-1.5 font-mono">({ambienceLoudness.label})</span>
               </span>
               <button
                 onClick={() => handleNormalizeSingleTrack(ambienceTrack.id, currentProfile.ambienceTargetLufs)}

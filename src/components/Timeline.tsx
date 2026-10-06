@@ -735,7 +735,7 @@ export const Timeline: React.FC<TimelineProps> = ({
 
                       <div className="relative z-10 flex items-center space-x-1 truncate font-medium drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)] select-none pointer-events-none">
                         <Mic className="w-3 h-3 mr-1 shrink-0 text-red-300" />
-                        <span className="truncate">{audio.name}</span>
+                        <span className="truncate">{audio.name}{!audio.dataUrl && '（音声なし）'}</span>
                       </div>
                       <span className="relative z-10 text-[9px] bg-black/70 px-1 rounded text-red-200 font-mono shrink-0 ml-1">
                         {Math.round(audio.volume * 100)}%
@@ -793,7 +793,7 @@ export const Timeline: React.FC<TimelineProps> = ({
 
                       <div className="relative z-10 flex items-center space-x-1 truncate font-medium drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)] select-none pointer-events-none">
                         <Wind className="w-3 h-3 mr-1 shrink-0 text-emerald-300" />
-                        <span className="truncate">{audio.name}</span>
+                        <span className="truncate">{audio.name}{!audio.dataUrl && '（音声なし）'}</span>
                       </div>
                       <span className="relative z-10 text-[9px] bg-black/70 px-1 rounded text-emerald-200 font-mono shrink-0 ml-1">
                         {Math.round(audio.volume * 100)}%
@@ -854,7 +854,7 @@ export const Timeline: React.FC<TimelineProps> = ({
 
                       <div className="relative z-10 flex items-center space-x-1 truncate font-medium drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)] select-none pointer-events-none">
                         <Music className="w-3 h-3 mr-1 shrink-0 text-indigo-300" />
-                        <span className="truncate">{audio.name}</span>
+                        <span className="truncate">{audio.name}{!audio.dataUrl && '（音声なし）'}</span>
                       </div>
 
                       <div className="relative z-10 flex items-center space-x-1 shrink-0 ml-1">
