@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { ProjectData, AudioTrackItem } from '../../types';
+import type { ProjectUpdate } from '../../services/projectHistory';
 import { audioEngine, LOUDNESS_PROFILES, LoudnessProfile } from '../../services/audioEngine';
 import { saveMediaBlob } from '../../services/storage';
 import { WaveformVisualizer } from '../WaveformVisualizer';
@@ -33,7 +34,7 @@ import {
 
 interface AudioPanelProps {
   project: ProjectData;
-  onUpdateProject: (p: ProjectData) => void;
+  onUpdateProject: (update: ProjectUpdate) => void;
   currentTime: number;
   isRecordingMic: boolean;
   onToggleRecordMic: () => void;
@@ -230,7 +231,7 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({
       name: file.name.replace(/\.[^/.]+$/, ''),
       type,
       startTime: 0,
-      duration: project.duration,
+      duration: 0, // set to the project length below
       volume: type === 'bgm' ? 0.65 : 0.45,
       dataUrl: url,
       blobKey,
@@ -245,20 +246,15 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({
           : undefined,
     };
 
-    // Replace or add
-    const existingIndex = project.audioTracks.findIndex((t) => t.type === type);
-    let updated: AudioTrackItem[];
-    if (existingIndex >= 0) {
-      updated = [...project.audioTracks];
-      updated[existingIndex] = newTrack;
-    } else {
-      updated = [...project.audioTracks, newTrack];
-    }
-
-    onUpdateProject({
-      ...project,
-      audioTracks: updated,
-      updatedAt: new Date().toISOString(),
+    // Replace the existing BGM / ambience track or add one, in the latest project
+    // (storing and analysing the file takes a moment, and edits may happen meanwhile)
+    onUpdateProject((prev) => {
+      const track = { ...newTrack, duration: prev.duration };
+      const existingIndex = prev.audioTracks.findIndex((t) => t.type === type);
+      const audioTracks = existingIndex >= 0
+        ? prev.audioTracks.map((t, i) => (i === existingIndex ? track : t))
+        : [...prev.audioTracks, track];
+      return { ...prev, audioTracks, updatedAt: new Date().toISOString() };
     });
   };
 

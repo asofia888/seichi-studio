@@ -1,5 +1,6 @@
 import React from 'react';
 import { ProjectData, SupportedLanguage } from '../types';
+import type { ProjectUpdate } from '../services/projectHistory';
 import { exportProjectAsJSON, restoreMediaUrls } from '../services/storage';
 import { shrinePresets } from '../services/sampleData';
 import {
@@ -20,7 +21,7 @@ import {
 
 interface HeaderProps {
   project: ProjectData;
-  onUpdateProject: (p: ProjectData) => void;
+  onUpdateProject: (update: ProjectUpdate) => void;
   previewLang: SupportedLanguage;
   onChangePreviewLang: (lang: SupportedLanguage) => void;
   onOpenThumbnailModal: () => void;

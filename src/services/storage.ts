@@ -13,6 +13,7 @@ const LEGACY_LOCALSTORAGE_KEY = 'sacred_studio_last_project';
 
 // Reuse one connection instead of opening a new one on every save
 let dbPromise: Promise<IDBDatabase> | null = null;
+let openedDb: IDBDatabase | null = null;
 
 function openDatabase(): Promise<IDBDatabase> {
   if (dbPromise) return dbPromise;
@@ -27,7 +28,10 @@ function openDatabase(): Promise<IDBDatabase> {
         db.createObjectStore(STORE_PROJECTS);
       }
     };
-    request.onsuccess = () => resolve(request.result);
+    request.onsuccess = () => {
+      openedDb = request.result;
+      resolve(request.result);
+    };
     request.onerror = () => {
       dbPromise = null; // allow a retry on the next call
       reject(request.error);
@@ -70,13 +74,18 @@ export async function deleteMediaBlob(key: string): Promise<void> {
 }
 
 export async function saveProjectToStorage(project: ProjectData): Promise<void> {
-  const db = await openDatabase();
-  await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction(STORE_PROJECTS, 'readwrite');
-    tx.objectStore(STORE_PROJECTS).put(project, LAST_PROJECT_KEY);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
+  const write = (db: IDBDatabase) =>
+    new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE_PROJECTS, 'readwrite');
+      tx.objectStore(STORE_PROJECTS).put(project, LAST_PROJECT_KEY);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+      // Commit now rather than at the end of the task: a page being closed aborts unfinished transactions
+      tx.commit?.();
+    });
+  // Once the database is open, start the write synchronously: a save requested while the page
+  // is closing (pagehide) must not wait for a later tick, or it never reaches the database
+  await (openedDb ? write(openedDb) : openDatabase().then(write));
 
   // IndexedDB is now the source of truth; drop the legacy copy so it can never resurface stale
   try {

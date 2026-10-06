@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { ProjectData, MultilingualSubtitleItem, SubtitleCategory } from '../../types';
+import type { ProjectUpdate } from '../../services/projectHistory';
 import {
   Type,
   Plus,
@@ -12,7 +13,7 @@ import {
 
 interface TelopPanelProps {
   project: ProjectData;
-  onUpdateProject: (p: ProjectData) => void;
+  onUpdateProject: (update: ProjectUpdate) => void;
   selectedSubId: string | null;
   onSelectSubtitle: (id: string) => void;
   currentTime: number;

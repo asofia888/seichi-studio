@@ -1,5 +1,6 @@
 import React, { useRef } from 'react';
 import { ProjectData, VideoClipItem } from '../../types';
+import type { ProjectUpdate } from '../../services/projectHistory';
 import { saveMediaBlob } from '../../services/storage';
 import {
   Upload,
@@ -38,7 +39,7 @@ function readVideoDuration(url: string): Promise<number | null> {
 
 interface MediaPanelProps {
   project: ProjectData;
-  onUpdateProject: (p: ProjectData) => void;
+  onUpdateProject: (update: ProjectUpdate) => void;
   selectedClipId: string | null;
   onSelectClip: (id: string) => void;
 }
@@ -58,10 +59,9 @@ export const MediaPanel: React.FC<MediaPanelProps> = ({
     const files = e.target.files;
     if (!files || files.length === 0) return;
 
+    // startTime is first the offset from the end of the timeline; it becomes absolute when placed below
     const newClips: VideoClipItem[] = [];
-    let curStartTime = project.videoClips.length > 0
-      ? Math.max(...project.videoClips.map((c) => c.startTime + c.duration))
-      : 3; // after OP
+    let offset = 0;
 
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
@@ -78,7 +78,7 @@ export const MediaPanel: React.FC<MediaPanelProps> = ({
         type: isVideo ? 'video' : 'image',
         dataUrl: url,
         blobKey,
-        startTime: curStartTime,
+        startTime: offset,
         duration: clipDuration,
         trimStart: 0,
         trimEnd: clipDuration,
@@ -93,22 +93,23 @@ export const MediaPanel: React.FC<MediaPanelProps> = ({
           : undefined,
       });
 
-      curStartTime += clipDuration;
+      offset += clipDuration;
     }
+    if (newClips.length === 0) return;
 
-    const updatedClips = [...project.videoClips, ...newClips];
-    const newDuration = Math.max(project.duration, curStartTime + project.branding.edDuration);
-
-    onUpdateProject({
-      ...project,
-      videoClips: updatedClips,
-      duration: newDuration,
-      updatedAt: new Date().toISOString(),
+    // Storing the files takes a moment, so place the clips after the end of the latest project
+    onUpdateProject((prev) => {
+      const start = prev.videoClips.length > 0
+        ? Math.max(...prev.videoClips.map((c) => c.startTime + c.duration))
+        : 3; // after OP
+      return {
+        ...prev,
+        videoClips: [...prev.videoClips, ...newClips.map((c) => ({ ...c, startTime: start + c.startTime }))],
+        duration: Math.max(prev.duration, start + offset + prev.branding.edDuration),
+        updatedAt: new Date().toISOString(),
+      };
     });
-
-    if (newClips.length > 0) {
-      onSelectClip(newClips[0].id);
-    }
+    onSelectClip(newClips[0].id);
   };
 
   // Add artistic sacred gradient placeholder image

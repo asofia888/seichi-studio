@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { ProjectData, ChapterItem } from '../../types';
+import type { ProjectUpdate } from '../../services/projectHistory';
 import { generateYouTubeDescription } from '../../services/srtExporter';
 import {
   ListOrdered,
@@ -13,7 +14,7 @@ import {
 
 interface ChaptersPanelProps {
   project: ProjectData;
-  onUpdateProject: (p: ProjectData) => void;
+  onUpdateProject: (update: ProjectUpdate) => void;
   currentTime: number;
 }
 

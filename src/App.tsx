@@ -3,12 +3,13 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useReducer, useCallback } from 'react';
 import { ProjectData, SupportedLanguage } from './types';
 import { initialProjectData } from './services/sampleData';
 import { loadLastProject, saveProjectToStorage, saveMediaBlob } from './services/storage';
 import { audioEngine } from './services/audioEngine';
 import { splitItemAtTime } from './services/timelineEdit';
+import { historyReducer, createHistory, ProjectUpdate } from './services/projectHistory';
 
 import { Header } from './components/Header';
 import { VideoPreview } from './components/VideoPreview';
@@ -36,8 +37,13 @@ import {
 
 type SidebarTab = 'media' | 'telop' | 'translation' | 'access' | 'audio' | 'chapters';
 
+// Wait this long after the last edit before writing the project to the browser's storage
+const SAVE_DELAY_MS = 500;
+
 export default function App() {
-  const [project, setProject] = useState<ProjectData>(initialProjectData);
+  // The project and its undo/redo history
+  const [history, dispatchHistory] = useReducer(historyReducer, initialProjectData, createHistory);
+  const project = history.present;
   const [currentTime, setCurrentTime] = useState<number>(0);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [previewLang, setPreviewLang] = useState<SupportedLanguage>('ja');
@@ -66,46 +72,57 @@ export default function App() {
   const [isExportOpen, setIsExportOpen] = useState(false);
   const [isShortcutsOpen, setIsShortcutsOpen] = useState(false);
 
-  // Undo / Redo history stacks
-  const [undoStack, setUndoStack] = useState<ProjectData[]>([]);
-  const [redoStack, setRedoStack] = useState<ProjectData[]>([]);
-
-  // Restore cached project from previous session if available
+  // Restore cached project from previous session if available.
+  // Nothing is saved until this finishes, so the sample project never overwrites saved work.
+  const [isRestored, setIsRestored] = useState(false);
   useEffect(() => {
-    loadLastProject().then((cached) => {
-      if (cached && cached.title) {
-        setProject(cached);
-      }
-    });
+    loadLastProject()
+      .then((cached) => {
+        if (cached && cached.title) {
+          dispatchHistory({ type: 'load', project: cached });
+        }
+      })
+      .finally(() => setIsRestored(true));
   }, []);
 
-  // Auto-save project changes to storage with history recording
-  const handleUpdateProject = (updated: ProjectData, recordHistory = true) => {
-    if (recordHistory) {
-      setUndoStack((prev) => [...prev.slice(-25), project]);
-      setRedoStack([]);
-    }
-    setProject(updated);
-    saveProjectToStorage(updated).catch(() => {});
-  };
+  // Save once edits pause (not on every keystroke), and right away when the tab is hidden or closed.
+  // The refs are updated in a layout effect, which runs right after each update and before the
+  // browser paints, so an edit followed immediately by closing or reloading the page is still saved.
+  const latestProjectRef = useRef(project);
+  const savedProjectRef = useRef<ProjectData | null>(null);
+  const isRestoredRef = useRef(false);
+  useLayoutEffect(() => {
+    latestProjectRef.current = project;
+    isRestoredRef.current = isRestored;
+  });
+  const flushSave = useCallback(() => {
+    const latest = latestProjectRef.current;
+    if (!isRestoredRef.current || latest === savedProjectRef.current) return;
+    savedProjectRef.current = latest;
+    saveProjectToStorage(latest).catch((e) => console.warn('Failed to save project:', e));
+  }, []);
+  useEffect(() => {
+    if (!isRestored) return;
+    const timer = setTimeout(flushSave, SAVE_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [project, isRestored, flushSave]);
+  useEffect(() => {
+    const onHidden = () => {
+      if (document.visibilityState === 'hidden') flushSave();
+    };
+    document.addEventListener('visibilitychange', onHidden);
+    window.addEventListener('pagehide', flushSave);
+    return () => {
+      document.removeEventListener('visibilitychange', onHidden);
+      window.removeEventListener('pagehide', flushSave);
+    };
+  }, [flushSave]);
 
-  const handleUndo = () => {
-    if (undoStack.length === 0) return;
-    const previous = undoStack[undoStack.length - 1];
-    setUndoStack((prev) => prev.slice(0, -1));
-    setRedoStack((prev) => [...prev, project]);
-    setProject(previous);
-    saveProjectToStorage(previous).catch(() => {});
-  };
-
-  const handleRedo = () => {
-    if (redoStack.length === 0) return;
-    const next = redoStack[redoStack.length - 1];
-    setRedoStack((prev) => prev.slice(0, -1));
-    setUndoStack((prev) => [...prev, project]);
-    setProject(next);
-    saveProjectToStorage(next).catch(() => {});
-  };
+  const handleUpdateProject = useCallback((update: ProjectUpdate) => {
+    dispatchHistory({ type: 'update', update, at: Date.now() });
+  }, []);
+  const handleUndo = () => dispatchHistory({ type: 'undo' });
+  const handleRedo = () => dispatchHistory({ type: 'redo' });
 
   // Playback timer loop
   useEffect(() => {
@@ -282,12 +299,13 @@ export default function App() {
           waveform,
         };
 
-        const updatedTracks = [...project.audioTracks, newNarration];
-        handleUpdateProject({
-          ...project,
-          audioTracks: updatedTracks,
-          duration: Math.max(project.duration, recordStartTimeRef.current + duration + 2),
-        });
+        // Applied to the latest project: edits made while recording or saving are kept
+        const recordEnd = recordStartTimeRef.current + duration + 2;
+        handleUpdateProject((prev) => ({
+          ...prev,
+          audioTracks: [...prev.audioTracks, newNarration],
+          duration: Math.max(prev.duration, recordEnd),
+        }));
       } catch (err: any) {
         alert(`録音停止時にエラーが発生しました: ${err.message}`);
         setIsRecordingMic(false);
@@ -324,8 +342,8 @@ export default function App() {
         onOpenShortcutsModal={() => setIsShortcutsOpen(true)}
         onUndo={handleUndo}
         onRedo={handleRedo}
-        canUndo={undoStack.length > 0}
-        canRedo={redoStack.length > 0}
+        canUndo={history.past.length > 0}
+        canRedo={history.future.length > 0}
       />
 
       {/* Main Workspace (Sidebar + Canvas Preview) */}

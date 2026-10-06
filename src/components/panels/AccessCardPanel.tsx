@@ -1,5 +1,6 @@
 import React, { useRef, useState } from 'react';
 import { ProjectData, AccessCardItem, SupportedLanguage } from '../../types';
+import type { ProjectUpdate } from '../../services/projectHistory';
 import {
   MapPin,
   Clock,
@@ -14,7 +15,7 @@ import {
 
 interface AccessCardPanelProps {
   project: ProjectData;
-  onUpdateProject: (p: ProjectData) => void;
+  onUpdateProject: (update: ProjectUpdate) => void;
   previewLang: SupportedLanguage;
   currentTime: number;
 }
@@ -28,16 +29,14 @@ export const AccessCardPanel: React.FC<AccessCardPanelProps> = ({
   const mapUploadRef = useRef<HTMLInputElement | null>(null);
   const activeCard = project.accessCards[0] || null;
 
+  // Applied to the latest project, so it is also safe after reading a map image file
   const handleUpdateActiveCard = (patch: Partial<AccessCardItem>) => {
     if (!activeCard) return;
-    const updated = project.accessCards.map((c, i) =>
-      i === 0 ? { ...c, ...patch } : c
-    );
-    onUpdateProject({
-      ...project,
-      accessCards: updated,
+    onUpdateProject((prev) => ({
+      ...prev,
+      accessCards: prev.accessCards.map((c, i) => (i === 0 ? { ...c, ...patch } : c)),
       updatedAt: new Date().toISOString(),
-    });
+    }));
   };
 
   const handleCreateAccessCard = () => {

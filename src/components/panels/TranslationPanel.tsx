@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { ProjectData, GlossaryItem, MultilingualSubtitleItem, SupportedLanguage } from '../../types';
+import type { ProjectUpdate } from '../../services/projectHistory';
 import {
   translateWithClaude,
   CLAUDE_MODELS,
@@ -25,7 +26,7 @@ import {
 
 interface TranslationPanelProps {
   project: ProjectData;
-  onUpdateProject: (p: ProjectData) => void;
+  onUpdateProject: (update: ProjectUpdate) => void;
 }
 
 export const TranslationPanel: React.FC<TranslationPanelProps> = ({
@@ -79,28 +80,25 @@ export const TranslationPanel: React.FC<TranslationPanelProps> = ({
     });
   };
 
+  // Write translations into the latest project (translating takes seconds per line and the user
+  // may keep editing). A line whose Japanese was changed or that was deleted meanwhile is left alone.
+  const applyTranslations = (results: { id: string; ja: string; en: string }[]) => {
+    onUpdateProject((prev) => ({
+      ...prev,
+      subtitles: prev.subtitles.map((s) => {
+        const result = results.find((r) => r.id === s.id);
+        return result && s.text.ja === result.ja ? { ...s, text: { ...s.text, en: result.en } } : s;
+      }),
+      updatedAt: new Date().toISOString(),
+    }));
+  };
+
   // Translate a single subtitle
   const handleTranslateSingle = async (sub: MultilingualSubtitleItem, index: number) => {
     setTranslatingIndex(index);
     try {
       const en = await translateWithClaude(sub.text.ja, savedApiKey, model, project.glossary);
-
-      const updatedSubtitles = project.subtitles.map((s) => {
-        if (s.id !== sub.id) return s;
-        return {
-          ...s,
-          text: {
-            ...s.text,
-            en,
-          },
-        };
-      });
-
-      onUpdateProject({
-        ...project,
-        subtitles: updatedSubtitles,
-        updatedAt: new Date().toISOString(),
-      });
+      applyTranslations([{ id: sub.id, ja: sub.text.ja, en }]);
     } catch (err: any) {
       alert(`翻訳エラー: ${err.message}`);
     } finally {
@@ -114,39 +112,24 @@ export const TranslationPanel: React.FC<TranslationPanelProps> = ({
     setIsTranslatingAll(true);
     setStatusMessage('Claude APIで英語に翻訳中...');
 
-    const newSubs = [...project.subtitles];
-    let translatedCount = 0;
+    const lines = project.subtitles.map((sub, index) => ({ sub, index })).filter(({ sub }) => sub.text.ja);
+    const results: { id: string; ja: string; en: string }[] = [];
     try {
-      for (let i = 0; i < newSubs.length; i++) {
-        const sub = newSubs[i];
-        if (!sub.text.ja) continue;
-
-        setTranslatingIndex(i);
+      for (const { sub, index } of lines) {
+        setTranslatingIndex(index);
         const en = await translateWithClaude(sub.text.ja, savedApiKey, model, project.glossary);
-
-        newSubs[i] = {
-          ...sub,
-          text: {
-            ...sub.text,
-            en,
-          },
-        };
-        translatedCount++;
+        results.push({ id: sub.id, ja: sub.text.ja, en });
       }
 
       setStatusMessage('すべての解説テロップの英語翻訳が完了しました！');
       setTimeout(() => setStatusMessage(null), 4000);
     } catch (e: any) {
       setStatusMessage(null);
-      alert(`${translatedCount}行を翻訳したところでエラーが発生しました（翻訳済みの行は反映されます）:\n${e.message}`);
+      alert(`${results.length}行を翻訳したところでエラーが発生しました（翻訳済みの行は反映されます）:\n${e.message}`);
     } finally {
       // Keep the lines that finished, even if a later line failed
-      if (translatedCount > 0) {
-        onUpdateProject({
-          ...project,
-          subtitles: newSubs,
-          updatedAt: new Date().toISOString(),
-        });
+      if (results.length > 0) {
+        applyTranslations(results);
       }
       setIsTranslatingAll(false);
       setTranslatingIndex(null);

@@ -1,5 +1,6 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { ProjectData } from '../types';
+import type { ProjectUpdate } from '../services/projectHistory';
 import { WaveformVisualizer } from './WaveformVisualizer';
 import { isNarrationAudibleAt } from '../services/audioEngine';
 import {
@@ -24,7 +25,7 @@ import {
 
 interface TimelineProps {
   project: ProjectData;
-  onUpdateProject: (p: ProjectData) => void;
+  onUpdateProject: (update: ProjectUpdate) => void;
   currentTime: number;
   onSeek: (time: number) => void;
   onSelectTrackItem: (type: string, id: string) => void;
