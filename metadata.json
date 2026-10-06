@@ -3,8 +3,5 @@
   "description": "神社・聖地案内YouTube動画（16:9 / 9:16ショート）専用ブラウザ動画編集ツール。定型テロップ、日英字幕、アクセス案内カード、ナレーション収録、自動ダッキング、MP4書き出し対応。",
   "requestFramePermissions": [
     "microphone"
-  ],
-  "majorCapabilities": [
-    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
   ]
 }

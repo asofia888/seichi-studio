@@ -1,20 +1,88 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
-</div>
+# ⛩️ 聖地巡礼動画スタジオ (Seichi Studio)
 
-# Run and deploy your AI Studio app
+神社・聖地を案内する YouTube 動画（横 16:9 / 縦 9:16 ショート）を、ブラウザだけで作れる動画編集ツールです。
+写真・動画・ナレーション・BGM を並べ、神社紹介に特化したテロップやアクセス案内を重ねて、MP4 で書き出せます。
 
-This contains everything you need to run your app locally.
+## 主な機能
 
-View your app in AI Studio: https://ai.studio/apps/65918b6f-74d0-47c8-9a01-ed79388a7c39
+| 分類 | 内容 |
+|---|---|
+| テロップ | 聖地名カード（名称・所在地・御祭神・ご利益）、解説テロップ、参拝作法カード。長い文は自動で折り返し・縮小 |
+| 字幕 | 日本語・英語の2言語。Claude による英訳（用語集で固有名詞の表記を統一）、SRT 字幕ファイルの書き出し |
+| 映像 | 写真のケン・バーンズ効果（ズーム・パン・注視点指定）、動画クリップ（元音声の音量調整つき）、分割・トリミング・スナップ |
+| 音声 | ブラウザでのナレーション録音、BGM・自然音、ナレーション中の BGM 自動ダッキング、フェード、ラウドネス測定（ITU-R BS.1770 / LUFS）と自動調整、出力レベルメーター |
+| 案内 | アクセス案内カード（所在地・最寄り駅・駐車場・参拝時間＋地図画像または簡易地図）、YouTube 概要欄用チャプターの生成 |
+| 書き出し | MP4（H.264 / AAC・1080p・30fps）。非対応環境では WebM。サムネイル画像（PNG）の作成 |
+| その他 | 元に戻す／やり直し、キーボードショートカット、神社プリセット（戸隠神社・出雲大社・伊勢神宮） |
 
-## Run Locally
+## 動作環境
 
-**Prerequisites:**  Node.js
+- **ブラウザ**: 最新版の Google Chrome または Microsoft Edge を推奨（動画書き出しに WebCodecs を使用）。
+  その他のブラウザでは、書き出しが WebM 形式になる、または利用できない場合があります。
+- **Node.js**: 20.19 以上（22 LTS 推奨）※ 開発サーバーの起動・ビルドに必要
 
+## はじめかた
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+```bash
+npm install
+npm run dev
+```
+
+ブラウザで http://localhost:3000 を開きます。
+
+| コマンド | 内容 |
+|---|---|
+| `npm run dev` | 開発サーバーを起動 |
+| `npm run build` | 本番用ファイルを `dist/` に作成 |
+| `npm run preview` | ビルド結果をローカルで確認 |
+| `npm run lint` | 型チェック（TypeScript strict） |
+
+## 英訳（Claude API）の設定
+
+1. [Claude Console](https://platform.claude.com/) で API キーを作成します（従量課金）。
+2. アプリの「翻訳」タブで API キーを入力して保存し、翻訳モデルを選びます。
+   - Claude Opus 5.5（高品質・標準） / Sonnet 5.5（バランス） / Haiku 4.5（低コスト）
+3. 各行の「この行だけ再翻訳」または「全テロップを一括翻訳」を押します。
+
+API キーはこのブラウザ内にのみ保存され、翻訳時に Anthropic の API へ直接送信されます。
+プロジェクトの保存ファイル（JSON）には含まれません。
+
+## データの保存について
+
+- プロジェクトと素材（写真・動画・音声・録音）は、**このブラウザの中**（IndexedDB）に自動保存されます。
+- ヘッダーの「保存」で書き出す JSON には、**素材ファイル自体は含まれません**。
+  同じブラウザでは「読込」で素材も復元されますが、別の PC・ブラウザでは素材を追加し直す必要があります。
+- ブラウザの「サイトデータの削除」を行うと素材も消えます。元の写真・動画・音声は手元に残しておいてください。
+
+## 地図について
+
+アクセス案内カードの地図は2種類から選べます。
+
+- **地図画像（推奨）**: 正確な地図をアップロードして表示します。
+  アプリ内の「OpenStreetMapでこの座標を開く」から地図を開き、「共有」→「画像」でダウンロードした画像を使えます。
+  その場合は出典表記「© OpenStreetMap contributors」を残してください。
+- **簡易地図**: 緯度・経度のピンと座標を表示する装飾的な図です（実際の道路などは表示されません）。
+
+## キーボードショートカット
+
+| キー | 操作 |
+|---|---|
+| Space | 再生 / 一時停止 |
+| ← / → | 1コマ移動（Shift 併用で1秒） |
+| Home / End | 先頭 / 末尾へ |
+| S | 選択中のアイテムを再生位置で分割 |
+| Delete / Backspace | 選択中のアイテムを削除 |
+| R | ナレーション録音の開始 / 停止 |
+| Ctrl+Z / Ctrl+Y（Mac は Cmd+Z / Cmd+Shift+Z） | 元に戻す / やり直す |
+| ? | ショートカット一覧 |
+| Esc | ダイアログを閉じる |
+
+## 既知の制限
+
+- 書き出しはブラウザのメモリ上で行います。長尺（数十分以上）の動画ではメモリ不足になる可能性があります。
+- 動画素材の形式（コーデック）によっては、ブラウザが読み込めず書き出しに反映されない場合があります（書き出し完了時に警告を表示します）。
+- PC での利用を想定しています（スマートフォンの画面には対応していません）。
+
+## 技術構成
+
+React 19 / TypeScript / Vite / Tailwind CSS 4 / Web Audio API / WebCodecs（[mediabunny](https://github.com/Vanilagy/mediabunny)）/ [Anthropic TypeScript SDK](https://github.com/anthropics/anthropic-sdk-typescript)
