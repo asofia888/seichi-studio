@@ -65,7 +65,8 @@ export interface VideoClipItem {
   duration: number;     // 表示尺
   trimStart: number;
   trimEnd: number;
-  
+  volume?: number;      // 動画の元音声の音量 0.0 - 1.0（未設定は1.0）
+
   // ケン・バーンズ効果 (写真用)
   kenBurns?: {
     enabled: boolean;

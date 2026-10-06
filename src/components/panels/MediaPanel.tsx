@@ -318,6 +318,25 @@ export const MediaPanel: React.FC<MediaPanelProps> = ({
             </div>
           </div>
 
+          {/* Original sound recorded with the video */}
+          {selectedClip.type === 'video' && (
+            <div className="pt-2 border-t border-[#212937] text-xs space-y-1">
+              <div className="flex justify-between text-[#8A99AD]">
+                <span>動画の元音声の音量</span>
+                <span className="font-mono text-[#D4AF37]">{Math.round((selectedClip.volume ?? 1) * 100)}%</span>
+              </div>
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.05"
+                value={selectedClip.volume ?? 1}
+                onChange={(e) => handleUpdateSelectedClip({ volume: parseFloat(e.target.value) })}
+                className="w-full h-1 bg-[#253245] accent-[#D4AF37]"
+              />
+            </div>
+          )}
+
           {/* Ken Burns effect toggle for photos */}
           {selectedClip.type === 'image' && (
             <div className="pt-2 border-t border-[#212937] space-y-2">

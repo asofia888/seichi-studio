@@ -12,6 +12,11 @@ import {
   SupportedLanguage,
 } from '../types';
 
+export interface ExportRenderOptions {
+  /** Frame decoded from the active video clip for this timestamp (null if none could be decoded) */
+  videoFrame: { image: CanvasImageSource; width: number; height: number } | null;
+}
+
 export class CanvasRenderer {
   private imageCache: Map<string, HTMLImageElement> = new Map();
   private videoCache: Map<string, HTMLVideoElement> = new Map();
@@ -43,7 +48,6 @@ export class CanvasRenderer {
     if (!vid) {
       vid = document.createElement('video');
       vid.crossOrigin = 'anonymous';
-      vid.muted = true;
       vid.playsInline = true;
       vid.src = url;
       this.videoCache.set(id, vid);
@@ -52,14 +56,30 @@ export class CanvasRenderer {
   }
 
   /**
-   * Main render method for a specific frame
+   * The media clip shown at this time: undefined during the OP/ED cards,
+   * when nothing is placed there, or when the video track is hidden.
+   */
+  public getActiveClip(project: ProjectData, currentTime: number): VideoClipItem | undefined {
+    if (project.branding.opDuration > 0 && currentTime < project.branding.opDuration) return undefined;
+    if (project.branding.edDuration > 0 && currentTime >= project.duration - project.branding.edDuration) return undefined;
+    if (project.mutedTracks?.video === true) return undefined;
+    return project.videoClips.find(
+      (c) => currentTime >= c.startTime && currentTime < c.startTime + c.duration
+    );
+  }
+
+  /**
+   * Main render method for a specific frame.
+   * Without `exportOptions` it renders the live preview and drives the <video> elements;
+   * with them it renders an export frame and leaves the preview's <video> elements untouched.
    */
   public renderFrame(
     ctx: CanvasRenderingContext2D,
     project: ProjectData,
     currentTime: number,
     displayLang: SupportedLanguage = 'ja',
-    isPlaying: boolean = false
+    isPlaying: boolean = false,
+    exportOptions?: ExportRenderOptions
   ) {
     const isLandscape = project.aspectRatio === '16:9';
     const W = isLandscape ? 1920 : 1080;
@@ -69,6 +89,14 @@ export class CanvasRenderer {
     if (ctx.canvas.width !== W || ctx.canvas.height !== H) {
       ctx.canvas.width = W;
       ctx.canvas.height = H;
+    }
+
+    const activeClip = this.getActiveClip(project, currentTime);
+    if (!exportOptions) {
+      // Only the clip on screen may play; any other video (e.g. the previous clip) must stop, or its sound keeps going
+      for (const [id, vid] of this.videoCache) {
+        if (id !== activeClip?.id && !vid.paused) vid.pause();
+      }
     }
 
     // 1. Clear background (Deep sacred charcoal #0b0d11)
@@ -89,13 +117,8 @@ export class CanvasRenderer {
     }
 
     // 4. Render Active Media Clip (Video or Photo with Ken Burns)
-    const isVideoMuted = project.mutedTracks?.video === true;
-    const activeClip = project.videoClips.find(
-      (c) => currentTime >= c.startTime && currentTime < c.startTime + c.duration
-    );
-
-    if (activeClip && !isVideoMuted) {
-      this.renderClip(ctx, activeClip, currentTime, W, H, isPlaying);
+    if (activeClip) {
+      this.renderClip(ctx, activeClip, currentTime, W, H, isPlaying, exportOptions);
     } else {
       // Elegant placeholder when no media is assigned or video is hidden
       this.renderAtmosphericPlaceholder(ctx, currentTime, W, H, isLandscape);
@@ -140,7 +163,8 @@ export class CanvasRenderer {
     currentTime: number,
     W: number,
     H: number,
-    isPlaying: boolean
+    isPlaying: boolean,
+    exportOptions?: ExportRenderOptions
   ) {
     const elapsed = currentTime - clip.startTime;
     const progress = Math.min(1, Math.max(0, elapsed / (clip.duration || 1)));
@@ -186,9 +210,16 @@ export class CanvasRenderer {
         ctx.drawImage(img, -drawW / 2, -drawH / 2, drawW, drawH);
         ctx.restore();
       }
+    } else if (clip.type === 'video' && exportOptions) {
+      // Export: draw the frame decoded for exactly this timestamp
+      const frame = exportOptions.videoFrame;
+      if (frame) {
+        this.drawCover(ctx, frame.image, frame.width, frame.height, W, H);
+      }
     } else if (clip.type === 'video' && clip.dataUrl) {
       const vid = this.getVideoElement(clip.id, clip.dataUrl);
       const targetTime = clip.trimStart + elapsed;
+      vid.volume = Math.max(0, Math.min(1, clip.volume ?? 1));
 
       if (isPlaying && vid.paused && vid.readyState >= 2) {
         vid.play().catch(() => {});
@@ -201,22 +232,29 @@ export class CanvasRenderer {
       }
 
       if (vid.readyState >= 2) {
-        ctx.save();
-        const vRatio = (vid.videoWidth || W) / (vid.videoHeight || H);
-        const sRatio = W / H;
-        let dw = W;
-        let dh = H;
-        if (vRatio > sRatio) {
-          dh = H;
-          dw = H * vRatio;
-        } else {
-          dw = W;
-          dh = W / vRatio;
-        }
-        ctx.drawImage(vid, (W - dw) / 2, (H - dh) / 2, dw, dh);
-        ctx.restore();
+        this.drawCover(ctx, vid, vid.videoWidth || W, vid.videoHeight || H, W, H);
       }
     }
+  }
+
+  /** Draw a source scaled to fill the W x H frame (cropping the overflow), centered */
+  private drawCover(
+    ctx: CanvasRenderingContext2D,
+    source: CanvasImageSource,
+    srcW: number,
+    srcH: number,
+    W: number,
+    H: number
+  ) {
+    const srcRatio = srcW / srcH;
+    let dw = W;
+    let dh = H;
+    if (srcRatio > W / H) {
+      dw = H * srcRatio;
+    } else {
+      dh = W / srcRatio;
+    }
+    ctx.drawImage(source, (W - dw) / 2, (H - dh) / 2, dw, dh);
   }
 
   /**

@@ -1,293 +1,489 @@
 /**
  * Video Exporter Service
- * Exports the project timeline by rendering frames onto an Canvas
- * and capturing with MediaRecorder with complete multi-track audio mixdown
- * (Narration, BGM auto-ducking, Ambience, and smooth fade-in/fade-out).
+ * Renders the timeline frame by frame (faster than real time, unaffected by background tabs)
+ * and encodes it with WebCodecs into an MP4 (H.264 + AAC), or WebM (VP9/VP8 + Opus) where the
+ * browser cannot encode H.264/AAC. Video clips are decoded frame-accurately, and the soundtrack
+ * is a complete offline mixdown (narration, BGM with auto-ducking, ambience, video clip sound, fades).
  */
-import { ProjectData, SupportedLanguage, AudioTrackItem } from '../types';
-import { canvasRenderer } from './canvasRenderer';
+import {
+  ALL_FORMATS,
+  AudioBufferSource,
+  BlobSource,
+  BufferTarget,
+  CanvasSink,
+  CanvasSource,
+  Input,
+  Mp4OutputFormat,
+  Output,
+  QUALITY_HIGH,
+  WebMOutputFormat,
+  getFirstEncodableAudioCodec,
+  getFirstEncodableVideoCodec,
+  type AudioCodec,
+  type OutputFormat,
+  type VideoCodec,
+  type WrappedCanvas,
+} from 'mediabunny';
+import { ProjectData, SupportedLanguage, VideoClipItem } from '../types';
+import { canvasRenderer, ExportRenderOptions } from './canvasRenderer';
 
 export interface ExportProgress {
-  currentSecond: number;
-  totalSeconds: number;
   percentage: number;
   statusText: string;
 }
 
-/**
- * Pre-render all project audio tracks into a single unified stereo AudioBuffer
- * with accurate timing, volume levels, fade-in/out, and BGM auto-ducking during speech.
- */
-async function renderMixedAudioBuffer(project: ProjectData, duration: number): Promise<AudioBuffer | null> {
-  const sampleRate = 44100;
-  const totalSamples = Math.max(1, Math.ceil(duration * sampleRate));
-  const offlineCtx = new OfflineAudioContext(2, totalSamples, sampleRate);
+export interface ExportResult {
+  blob: Blob;
+  fileExtension: 'mp4' | 'webm';
+  formatLabel: string;
+  /** Problems that did not stop the export (e.g. a clip that could not be decoded) */
+  warnings: string[];
+}
 
-  // Decode helper using standard audio context
-  const tempCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+export class ExportCanceledError extends Error {
+  constructor() {
+    super('書き出しを中止しました。');
+  }
+}
 
-  // Find all narration tracks to compute ducking intervals
-  const narrationClips = project.audioTracks.filter((t) => t.type === 'narration');
+const FPS = 30;
+const SAMPLE_RATE = 48000;
+const VIDEO_BITRATE = 8_000_000; // YouTube's recommendation for 1080p30 SDR uploads
 
-  let hasAudibleContent = false;
+interface ChosenFormat {
+  format: OutputFormat;
+  videoCodec: VideoCodec;
+  audioCodec: AudioCodec | null;
+  fileExtension: 'mp4' | 'webm';
+  mimeType: string;
+  formatLabel: string;
+}
 
-  for (const track of project.audioTracks) {
-    if (track.startTime >= duration) continue;
+async function chooseFormat(width: number, height: number, needsAudio: boolean): Promise<ChosenFormat> {
+  const audioOptions = { numberOfChannels: 2, sampleRate: SAMPLE_RATE };
 
-    let audioBuffer: AudioBuffer | null = null;
-
-    if (track.dataUrl) {
-      try {
-        const resp = await fetch(track.dataUrl);
-        const arrayBuf = await resp.arrayBuffer();
-        audioBuffer = await tempCtx.decodeAudioData(arrayBuf);
-      } catch (err) {
-        console.warn(`Could not decode audio for track ${track.name}, generating synthetic tone:`, err);
-      }
-    }
-
-    // If no buffer (e.g. preset BGM or procedural ambience), synthesize serene background sound
-    if (!audioBuffer) {
-      audioBuffer = createProceduralAudioBuffer(offlineCtx, track.type, Math.min(duration, track.duration));
-    }
-
-    if (!audioBuffer) continue;
-
-    hasAudibleContent = true;
-
-    const source = offlineCtx.createBufferSource();
-    source.buffer = audioBuffer;
-    source.loop = track.type === 'bgm' || track.type === 'ambience';
-
-    const gainNode = offlineCtx.createGain();
-    const baseVol = Math.max(0, Math.min(1.0, track.volume));
-    gainNode.gain.setValueAtTime(baseVol, 0);
-
-    const clipStart = Math.max(0, track.startTime);
-    const clipEnd = Math.min(duration, track.startTime + track.duration);
-    const offset = Math.max(0, track.trimStart || 0);
-
-    // Apply Fade In
-    const fadeIn = track.fadeInSec ?? (track.type === 'bgm' || track.type === 'ambience' ? 1.5 : 0.05);
-    if (fadeIn > 0) {
-      gainNode.gain.setValueAtTime(0, clipStart);
-      gainNode.gain.linearRampToValueAtTime(baseVol, Math.min(clipEnd, clipStart + fadeIn));
-    }
-
-    // Apply Fade Out
-    const fadeOut = track.fadeOutSec ?? (track.type === 'bgm' || track.type === 'ambience' ? 2.0 : 0.1);
-    if (fadeOut > 0 && clipEnd - fadeOut > clipStart) {
-      gainNode.gain.setValueAtTime(baseVol, clipEnd - fadeOut);
-      gainNode.gain.linearRampToValueAtTime(0, clipEnd);
-    }
-
-    // Apply Auto Ducking on BGM when narration is speaking
-    if (track.type === 'bgm' && track.autoDucking?.enabled !== false && narrationClips.length > 0) {
-      const duckVol = baseVol * (track.autoDucking?.duckVolume ?? 0.22);
-      const rampTime = track.autoDucking?.fadeSec ?? 0.35;
-
-      for (const narr of narrationClips) {
-        const nStart = Math.max(clipStart, narr.startTime);
-        const nEnd = Math.min(clipEnd, narr.startTime + narr.duration);
-
-        if (nEnd > nStart) {
-          gainNode.gain.setValueAtTime(baseVol, Math.max(0, nStart - rampTime));
-          gainNode.gain.linearRampToValueAtTime(duckVol, nStart);
-          gainNode.gain.setValueAtTime(duckVol, nEnd);
-          gainNode.gain.linearRampToValueAtTime(baseVol, Math.min(clipEnd, nEnd + rampTime));
-        }
-      }
-    }
-
-    source.connect(gainNode);
-    gainNode.connect(offlineCtx.destination);
-
-    try {
-      source.start(clipStart, offset, track.duration);
-    } catch {
-      source.start(clipStart, offset);
-    }
+  const avc = await getFirstEncodableVideoCodec(['avc'], { width, height, bitrate: VIDEO_BITRATE });
+  const aac = needsAudio ? await getFirstEncodableAudioCodec(['aac'], audioOptions) : null;
+  if (avc && (aac || !needsAudio)) {
+    return {
+      format: new Mp4OutputFormat({ fastStart: false }), // metadata at the end keeps memory use to one copy
+      videoCodec: avc,
+      audioCodec: aac,
+      fileExtension: 'mp4',
+      mimeType: 'video/mp4',
+      formatLabel: needsAudio ? 'MP4 (H.264 / AAC)' : 'MP4 (H.264)',
+    };
   }
 
-  tempCtx.close().catch(() => {});
+  const vp = await getFirstEncodableVideoCodec(['vp9', 'vp8'], { width, height, bitrate: VIDEO_BITRATE });
+  const opus = needsAudio ? await getFirstEncodableAudioCodec(['opus'], audioOptions) : null;
+  if (vp && (opus || !needsAudio)) {
+    return {
+      format: new WebMOutputFormat(),
+      videoCodec: vp,
+      audioCodec: opus,
+      fileExtension: 'webm',
+      mimeType: 'video/webm',
+      formatLabel: `WebM (${vp.toUpperCase()}${needsAudio ? ' / Opus' : ''})`,
+    };
+  }
 
-  if (!hasAudibleContent) return null;
+  throw new Error('このブラウザは動画の書き出し（エンコード）に対応していません。最新版のChromeまたはEdgeでお試しください。');
+}
 
+// ---------------------------------------------------------------------------
+// Audio mixdown
+// ---------------------------------------------------------------------------
+
+async function decodeAudio(ctx: BaseAudioContext, url: string): Promise<AudioBuffer | null> {
   try {
-    return await offlineCtx.startRendering();
-  } catch (e) {
-    console.error('Failed to render offline audio mixdown:', e);
+    const data = await (await fetch(url)).arrayBuffer();
+    return await ctx.decodeAudioData(data);
+  } catch {
     return null;
   }
 }
 
+/** Gain node that fades in at `start` and out at `end`, at the given volume */
+function createFadeGain(
+  ctx: BaseAudioContext,
+  start: number,
+  end: number,
+  volume: number,
+  fadeIn: number,
+  fadeOut: number
+): GainNode {
+  const gain = ctx.createGain();
+  const fadeInEnd = Math.min(end, start + Math.max(0, fadeIn));
+  gain.gain.setValueAtTime(fadeIn > 0 ? 0 : volume, start);
+  if (fadeIn > 0) {
+    gain.gain.linearRampToValueAtTime(volume, fadeInEnd);
+  }
+  if (fadeOut > 0) {
+    // Never start fading out before the fade-in has finished
+    gain.gain.setValueAtTime(volume, Math.max(fadeInEnd, end - fadeOut));
+    gain.gain.linearRampToValueAtTime(0, end);
+  }
+  return gain;
+}
+
+/** Merge narration spans whose gap is too short for the BGM to come back up in between */
+function mergeIntervals(intervals: [number, number][], minGap: number): [number, number][] {
+  const sorted = [...intervals].sort((a, b) => a[0] - b[0]);
+  const merged: [number, number][] = [];
+  for (const [s, e] of sorted) {
+    const last = merged[merged.length - 1];
+    if (last && s - last[1] < minGap) {
+      last[1] = Math.max(last[1], e);
+    } else {
+      merged.push([s, e]);
+    }
+  }
+  return merged;
+}
+
+function scheduleSource(
+  ctx: BaseAudioContext,
+  buffer: AudioBuffer,
+  destination: AudioNode,
+  start: number,
+  end: number,
+  offset: number,
+  loop: boolean
+) {
+  const sourceOffset = loop ? offset % buffer.duration : offset;
+  if (sourceOffset >= buffer.duration) return; // trimmed past the end of the file
+  const source = ctx.createBufferSource();
+  source.buffer = buffer;
+  source.loop = loop;
+  source.connect(destination);
+  source.start(start, sourceOffset, end - start);
+}
+
 /**
- * Creates a soothing procedural meditation tone if external audio file is not loaded
+ * Mix every audible track into one stereo buffer. Mirrors the preview: muted tracks and
+ * tracks without a sound file are silent.
  */
-function createProceduralAudioBuffer(ctx: BaseAudioContext, type: string, durationSec: number): AudioBuffer {
-  const dur = Math.max(2, Math.min(120, durationSec));
-  const rate = ctx.sampleRate;
-  const buffer = ctx.createBuffer(2, Math.ceil(dur * rate), rate);
-  const left = buffer.getChannelData(0);
-  const right = buffer.getChannelData(1);
+async function renderAudioMix(project: ProjectData, duration: number, warnings: string[]): Promise<AudioBuffer | null> {
+  const muted = project.mutedTracks || {};
+  const ctx = new OfflineAudioContext(2, Math.max(1, Math.ceil(duration * SAMPLE_RATE)), SAMPLE_RATE);
+  let hasSound = false;
 
-  const freq1 = type === 'bgm' ? 144 : 220; // D3 / A3
-  const freq2 = type === 'bgm' ? 216 : 330;
+  const narrationSpans: [number, number][] = muted.narration
+    ? []
+    : project.audioTracks
+        .filter((t) => t.type === 'narration' && t.dataUrl)
+        .map((t): [number, number] => [t.startTime, Math.min(duration, t.startTime + t.duration)]);
 
-  for (let i = 0; i < buffer.length; i++) {
-    const t = i / rate;
-    const env = 0.5 + 0.5 * Math.sin(t * 0.5);
-    const s1 = Math.sin(2 * Math.PI * freq1 * t) * 0.08 * env;
-    const s2 = Math.sin(2 * Math.PI * freq2 * t) * 0.05 * env;
-    left[i] = s1 + s2;
-    right[i] = s1 - s2;
+  for (const track of project.audioTracks) {
+    if (muted[track.type] || !track.dataUrl) continue;
+    const start = Math.max(0, track.startTime);
+    const end = Math.min(duration, track.startTime + track.duration);
+    if (end <= start) continue;
+
+    const buffer = await decodeAudio(ctx, track.dataUrl);
+    if (!buffer) {
+      warnings.push(`音声「${track.name}」を読み込めなかったため、無音で書き出しました。`);
+      continue;
+    }
+
+    const isLooped = track.type === 'bgm' || track.type === 'ambience';
+    const fadeIn = track.fadeInSec ?? (isLooped ? 1.5 : 0.05);
+    const fadeOut = track.fadeOutSec ?? (isLooped ? 2.0 : 0.1);
+    const fade = createFadeGain(ctx, start, end, Math.max(0, Math.min(1, track.volume)), fadeIn, fadeOut);
+    fade.connect(ctx.destination);
+
+    let input: AudioNode = fade;
+    if (track.type === 'bgm' && track.autoDucking?.enabled !== false && narrationSpans.length > 0) {
+      // Ducking runs on its own gain node so its automation never collides with the fades
+      const duckLevel = track.autoDucking?.duckVolume ?? 0.22;
+      const ramp = track.autoDucking?.fadeSec ?? 0.35;
+      const duck = ctx.createGain();
+      duck.gain.setValueAtTime(1, 0);
+      for (const [s, e] of mergeIntervals(narrationSpans, ramp * 2)) {
+        duck.gain.setValueAtTime(1, Math.max(0, s - ramp));
+        duck.gain.linearRampToValueAtTime(duckLevel, Math.max(0, s));
+        duck.gain.setValueAtTime(duckLevel, e);
+        duck.gain.linearRampToValueAtTime(1, e + ramp);
+      }
+      duck.connect(fade);
+      input = duck;
+    }
+
+    scheduleSource(ctx, buffer, input, start, end, Math.max(0, track.trimStart || 0), isLooped);
+    hasSound = true;
   }
 
-  return buffer;
+  // Original sound recorded with the video clips
+  if (!muted.video) {
+    for (const clip of project.videoClips) {
+      const volume = Math.max(0, Math.min(1, clip.volume ?? 1));
+      if (clip.type !== 'video' || !clip.dataUrl || volume === 0) continue;
+      const start = Math.max(0, clip.startTime);
+      const end = Math.min(duration, clip.startTime + clip.duration);
+      if (end <= start) continue;
+
+      const buffer = await decodeAudio(ctx, clip.dataUrl);
+      if (!buffer) continue; // a video without a sound track is normal
+
+      const fade = createFadeGain(ctx, start, end, volume, 0.05, 0.1);
+      fade.connect(ctx.destination);
+      scheduleSource(ctx, buffer, fade, start, end, Math.max(0, clip.trimStart || 0), false);
+      hasSound = true;
+    }
+  }
+
+  return hasSound ? await ctx.startRendering() : null;
+}
+
+// ---------------------------------------------------------------------------
+// Frame-accurate video clip decoding
+// ---------------------------------------------------------------------------
+
+interface ClipFrameReader {
+  frames: AsyncGenerator<WrappedCanvas | null, void, unknown>;
+  input: Input;
+  remaining: number;
+  lastFrame: WrappedCanvas | null;
+}
+
+/**
+ * Decodes the frames each video clip needs, in timeline order, so every exported frame
+ * shows exactly the right picture. Readers open on first use and close when their clip is done.
+ */
+class VideoFrameProvider {
+  private readers = new Map<string, ClipFrameReader | null>();
+
+  constructor(
+    private plan: Map<string, number[]>,
+    private width: number,
+    private height: number,
+    private warnings: string[]
+  ) {}
+
+  async frameFor(clip: VideoClipItem): Promise<ExportRenderOptions['videoFrame']> {
+    let reader = this.readers.get(clip.id);
+    if (reader === undefined) {
+      reader = await this.open(clip);
+      this.readers.set(clip.id, reader);
+    }
+    if (!reader) return null;
+
+    const next = await reader.frames.next();
+    reader.remaining--;
+    // Past the end of the source video, hold its last frame
+    const frame = (!next.done && next.value) || reader.lastFrame;
+    reader.lastFrame = frame;
+    const result = frame ? { image: frame.canvas, width: frame.canvas.width, height: frame.canvas.height } : null;
+
+    if (reader.remaining <= 0) {
+      await this.closeReader(reader);
+      this.readers.set(clip.id, null);
+    }
+    return result;
+  }
+
+  private async open(clip: VideoClipItem): Promise<ClipFrameReader | null> {
+    const times = this.plan.get(clip.id) || [];
+    if (!clip.dataUrl || times.length === 0) return null;
+    let input: Input | null = null;
+    try {
+      const blob = await (await fetch(clip.dataUrl)).blob();
+      input = new Input({ source: new BlobSource(blob), formats: ALL_FORMATS });
+      const track = await input.getPrimaryVideoTrack();
+      if (!track || !(await track.canDecode())) {
+        throw new Error('unsupported codec');
+      }
+      const firstTimestamp = await track.getFirstTimestamp();
+      const sink = new CanvasSink(track, { width: this.width, height: this.height, fit: 'cover', poolSize: 2 });
+      return {
+        frames: sink.canvasesAtTimestamps(times.map((t) => t + firstTimestamp)),
+        input,
+        remaining: times.length,
+        lastFrame: null,
+      };
+    } catch (e) {
+      console.warn(`Could not decode video clip ${clip.name}:`, e);
+      input?.dispose();
+      this.warnings.push(`動画「${clip.name}」はこのブラウザで読み込めない形式のため、映像なしで書き出しました。`);
+      return null;
+    }
+  }
+
+  private async closeReader(reader: ClipFrameReader) {
+    await reader.frames.return(undefined).catch(() => {});
+    reader.input.dispose();
+  }
+
+  async dispose() {
+    for (const reader of this.readers.values()) {
+      if (reader) await this.closeReader(reader);
+    }
+    this.readers.clear();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Export
+// ---------------------------------------------------------------------------
+
+/** Every string the renderer may draw, so the web fonts can load all needed glyph subsets up front */
+function collectProjectText(project: ProjectData, lang: SupportedLanguage): string {
+  const parts: string[] = [
+    '⛩️📍【】御祭神ご利益所在地最寄り駅駐車場参拝時間アクセス案内作法心得神域の静寂 - Sanctuary Stillness',
+    'DeityBlessingEnshrinedAddressTransitParkingHours0123456789°NE.,:-',
+  ];
+  const b = project.branding;
+  for (const t of [b.opTitle, b.opSubtitle, b.edTitle, b.edSubtitle]) parts.push(t.ja, t[lang]);
+  for (const s of project.subtitles) {
+    parts.push(s.text.ja, s.text[lang]);
+    const meta = s.sanctuaryMeta;
+    if (meta) for (const t of [meta.name, meta.location, meta.deity, meta.blessing]) parts.push(t.ja, t[lang]);
+    if (s.etiquetteTip) for (const t of [s.etiquetteTip.title, s.etiquetteTip.detail]) parts.push(t.ja, t[lang]);
+  }
+  for (const a of project.accessCards) {
+    for (const t of [a.sanctuaryName, a.address, a.nearestStation, a.parking, a.visitingHours]) parts.push(t.ja, t[lang]);
+    parts.push(a.attribution);
+  }
+  return [...new Set(parts.filter(Boolean).join(''))].join('');
+}
+
+async function loadFonts(project: ProjectData, lang: SupportedLanguage) {
+  const text = collectProjectText(project, lang);
+  const fontSpecs = [
+    "500 20px 'Shippori Mincho'",
+    "600 20px 'Shippori Mincho'",
+    "700 20px 'Shippori Mincho'",
+    "400 20px 'Noto Serif JP'",
+    "500 20px 'Noto Serif JP'",
+    "600 20px 'Noto Serif JP'",
+    "700 20px 'Noto Serif JP'",
+  ];
+  // Japanese web fonts are split by character range; loading with the actual text fetches every range needed
+  await Promise.all(fontSpecs.map((spec) => document.fonts.load(spec, text).catch(() => [])));
+}
+
+// Yield so the progress bar can repaint and the cancel button stays responsive.
+// MessageChannel is used instead of setTimeout, which background tabs throttle to once per second.
+function yieldToBrowser(): Promise<void> {
+  return new Promise((resolve) => {
+    const channel = new MessageChannel();
+    channel.port1.onmessage = () => resolve();
+    channel.port2.postMessage(null);
+  });
 }
 
 export async function exportProjectVideo(
   project: ProjectData,
   exportLang: SupportedLanguage = 'ja',
-  onProgress?: (p: ExportProgress) => void
-): Promise<Blob> {
+  onProgress?: (p: ExportProgress) => void,
+  signal?: AbortSignal
+): Promise<ExportResult> {
   const isLandscape = project.aspectRatio === '16:9';
   const width = isLandscape ? 1920 : 1080;
   const height = isLandscape ? 1080 : 1920;
-  const fps = 30;
   const duration = Math.max(1, project.duration);
+  const totalFrames = Math.ceil(duration * FPS);
+  const warnings: string[] = [];
+  const checkCanceled = () => {
+    if (signal?.aborted) throw new ExportCanceledError();
+  };
 
+  // 1. Fonts and images, so the first frames are not drawn with fallbacks
+  onProgress?.({ percentage: 2, statusText: 'フォントと素材を準備中...' });
+  await loadFonts(project, exportLang);
+  for (const clip of project.videoClips) {
+    if (clip.type === 'image' && clip.dataUrl) {
+      await canvasRenderer.preloadImage(clip.dataUrl).catch(() => {
+        warnings.push(`写真「${clip.name}」を読み込めなかったため、背景のみで書き出しました。`);
+      });
+    }
+  }
+  checkCanceled();
+
+  // 2. Soundtrack
+  onProgress?.({ percentage: 5, statusText: '音声をミックス中（ダッキング・フェードを反映）...' });
+  const mixedAudio = await renderAudioMix(project, duration, warnings);
+  checkCanceled();
+
+  // 3. Encoder setup
+  const chosen = await chooseFormat(width, height, mixedAudio !== null);
   const canvas = document.createElement('canvas');
   canvas.width = width;
   canvas.height = height;
   const ctx = canvas.getContext('2d')!;
 
-  // 1. Pre-cache media assets
-  onProgress?.({
-    currentSecond: 0,
-    totalSeconds: duration,
-    percentage: 3,
-    statusText: 'メディア素材の読み込みと準備中...',
-  });
+  const output = new Output({ format: chosen.format, target: new BufferTarget() });
+  const videoSource = new CanvasSource(canvas, { codec: chosen.videoCodec, bitrate: VIDEO_BITRATE });
+  output.addVideoTrack(videoSource, { frameRate: FPS });
+  let audioSource: AudioBufferSource | null = null;
+  if (mixedAudio && chosen.audioCodec) {
+    audioSource = new AudioBufferSource({ codec: chosen.audioCodec, bitrate: QUALITY_HIGH });
+    output.addAudioTrack(audioSource);
+  }
 
-  for (const clip of project.videoClips) {
-    if (clip.dataUrl) {
-      if (clip.type === 'image') {
-        await canvasRenderer.preloadImage(clip.dataUrl).catch(() => {});
+  // Which source timestamps each video clip will be asked for, in frame order
+  const plan = new Map<string, number[]>();
+  for (let f = 0; f < totalFrames; f++) {
+    const t = f / FPS;
+    const clip = canvasRenderer.getActiveClip(project, t);
+    if (clip?.type === 'video') {
+      if (!plan.has(clip.id)) plan.set(clip.id, []);
+      plan.get(clip.id)!.push(Math.max(0, clip.trimStart + (t - clip.startTime)));
+    }
+  }
+  const frames = new VideoFrameProvider(plan, width, height, warnings);
+
+  try {
+    await output.start();
+
+    if (audioSource && mixedAudio) {
+      onProgress?.({ percentage: 8, statusText: '音声をエンコード中...' });
+      await audioSource.add(mixedAudio);
+      audioSource.close();
+    }
+
+    // 4. Frames, rendered at exact timestamps (no real-time pacing, so audio and video cannot drift)
+    for (let f = 0; f < totalFrames; f++) {
+      checkCanceled();
+      const t = f / FPS;
+      const clip = canvasRenderer.getActiveClip(project, t);
+      const videoFrame = clip?.type === 'video' ? await frames.frameFor(clip) : null;
+
+      canvasRenderer.renderFrame(ctx, project, t, exportLang, false, { videoFrame });
+      await videoSource.add(t, 1 / FPS);
+
+      if (f % 10 === 0 || f === totalFrames - 1) {
+        onProgress?.({
+          percentage: Math.floor(10 + ((f + 1) / totalFrames) * 85),
+          statusText: `映像をエンコード中 (${Math.floor(t)}秒 / ${Math.floor(duration)}秒)...`,
+        });
+        await yieldToBrowser();
       }
     }
-  }
 
-  // 2. Pre-render full multi-track audio soundtrack with ducking and fades
-  onProgress?.({
-    currentSecond: 0,
-    totalSeconds: duration,
-    percentage: 8,
-    statusText: 'マルチトラック音声の完全ミックスダウン合成中 (自動ダッキング・フェード反映)...',
-  });
-
-  const mixedAudioBuffer = await renderMixedAudioBuffer(project, duration);
-
-  // 3. Setup Canvas Video Stream & Mixed Audio Stream
-  const stream = canvas.captureStream(fps);
-
-  let playCtx: AudioContext | null = null;
-  let sourceNode: AudioBufferSourceNode | null = null;
-
-  if (mixedAudioBuffer) {
-    playCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
-    const audioDest = playCtx.createMediaStreamDestination();
-
-    sourceNode = playCtx.createBufferSource();
-    sourceNode.buffer = mixedAudioBuffer;
-    sourceNode.connect(audioDest);
-
-    const audioTracks = audioDest.stream.getAudioTracks();
-    if (audioTracks.length > 0) {
-      stream.addTrack(audioTracks[0]);
+    checkCanceled();
+    onProgress?.({ percentage: 97, statusText: 'ファイルを仕上げ中...' });
+    await output.finalize();
+  } catch (e) {
+    if (output.state !== 'finalized' && output.state !== 'canceled') {
+      await output.cancel().catch(() => {});
     }
+    throw e;
+  } finally {
+    await frames.dispose();
   }
 
-  // Determine supported container & codec
-  let mimeType = 'video/webm;codecs=vp9,opus';
-  if (!MediaRecorder.isTypeSupported(mimeType)) {
-    mimeType = 'video/webm;codecs=vp8,opus';
-  }
-  if (!MediaRecorder.isTypeSupported(mimeType)) {
-    mimeType = 'video/webm';
+  const buffer = (output.target as BufferTarget).buffer;
+  if (!buffer) {
+    throw new Error('書き出したファイルの取得に失敗しました。');
   }
 
-  const recordedChunks: Blob[] = [];
-  const recorder = new MediaRecorder(stream, {
-    mimeType,
-    videoBitsPerSecond: 14000000, // 14 Mbps pristine quality
-  });
-
-  recorder.ondataavailable = (e) => {
-    if (e.data && e.data.size > 0) {
-      recordedChunks.push(e.data);
-    }
+  onProgress?.({ percentage: 100, statusText: '書き出し完了！' });
+  return {
+    blob: new Blob([buffer], { type: chosen.mimeType }),
+    fileExtension: chosen.fileExtension,
+    formatLabel: chosen.formatLabel,
+    warnings,
   };
-
-  recorder.start();
-  if (sourceNode) {
-    sourceNode.start(0);
-  }
-
-  // 4. Render frames with pacing to match audio and prevent dropped frames
-  const totalFrames = Math.ceil(duration * fps);
-  const frameInterval = 1 / fps;
-  const frameDelayMs = Math.floor(1000 / fps);
-
-  for (let f = 0; f < totalFrames; f++) {
-    const currentTime = f * frameInterval;
-
-    canvasRenderer.renderFrame(ctx, project, currentTime, exportLang, false);
-
-    // Keep pace with audio recording
-    const pct = Math.floor(10 + (f / totalFrames) * 85);
-    if (f % 10 === 0 || f === totalFrames - 1) {
-      onProgress?.({
-        currentSecond: Math.floor(currentTime),
-        totalSeconds: Math.floor(duration),
-        percentage: pct,
-        statusText: `レンダリング中 (${Math.floor(currentTime)}秒 / ${Math.floor(duration)}秒)...`,
-      });
-    }
-
-    await new Promise((r) => setTimeout(r, frameDelayMs));
-  }
-
-  onProgress?.({
-    currentSecond: Math.floor(duration),
-    totalSeconds: Math.floor(duration),
-    percentage: 98,
-    statusText: '音声と映像の同期パッキング完了処理中...',
-  });
-
-  // Stop recorder and clean up
-  const finalBlob: Blob = await new Promise((resolve) => {
-    recorder.onstop = () => {
-      resolve(new Blob(recordedChunks, { type: mimeType }));
-    };
-    recorder.stop();
-  });
-
-  if (sourceNode) {
-    try {
-      sourceNode.stop();
-    } catch {}
-  }
-  if (playCtx) {
-    playCtx.close().catch(() => {});
-  }
-
-  onProgress?.({
-    currentSecond: Math.floor(duration),
-    totalSeconds: Math.floor(duration),
-    percentage: 100,
-    statusText: '書き出し完了！',
-  });
-
-  return finalBlob;
 }
