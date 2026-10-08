@@ -17,6 +17,7 @@ import {
   Redo2,
   Keyboard,
   Compass,
+  WandSparkles,
 } from 'lucide-react';
 
 interface HeaderProps {
@@ -26,6 +27,7 @@ interface HeaderProps {
   onChangePreviewLang: (lang: SupportedLanguage) => void;
   onOpenThumbnailModal: () => void;
   onOpenExportModal: () => void;
+  onOpenAutoEditModal: () => void;
   onOpenShortcutsModal?: () => void;
   onUndo?: () => void;
   onRedo?: () => void;
@@ -40,6 +42,7 @@ export const Header: React.FC<HeaderProps> = ({
   onChangePreviewLang,
   onOpenThumbnailModal,
   onOpenExportModal,
+  onOpenAutoEditModal,
   onOpenShortcutsModal,
   onUndo,
   onRedo,
@@ -214,6 +217,16 @@ export const Header: React.FC<HeaderProps> = ({
             <span className="hidden xl:inline">操作</span>
           </button>
         )}
+
+        {/* Automatic editing from a batch of videos */}
+        <button
+          onClick={onOpenAutoEditModal}
+          className="flex items-center space-x-1.5 px-3 py-1 text-xs font-medium text-[#F7F6F2] bg-[#251f14] hover:bg-[#33291a] border border-[#D4AF37]/60 rounded transition-colors shadow-sm"
+          title="動画をまとめて入れて、自動で下書きを作成"
+        >
+          <WandSparkles className="w-3.5 h-3.5 text-[#D4AF37]" />
+          <span>おまかせ編集</span>
+        </button>
 
         {/* Thumbnail Generator */}
         <button

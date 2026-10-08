@@ -25,6 +25,7 @@ import { ChaptersPanel } from './components/panels/ChaptersPanel';
 import { ThumbnailModal } from './components/modals/ThumbnailModal';
 import { ExportModal } from './components/modals/ExportModal';
 import { ShortcutsModal } from './components/modals/ShortcutsModal';
+import { AutoEditModal } from './components/modals/AutoEditModal';
 
 import {
   Film,
@@ -71,6 +72,7 @@ export default function App() {
   const [isThumbnailOpen, setIsThumbnailOpen] = useState(false);
   const [isExportOpen, setIsExportOpen] = useState(false);
   const [isShortcutsOpen, setIsShortcutsOpen] = useState(false);
+  const [isAutoEditOpen, setIsAutoEditOpen] = useState(false);
 
   // Restore cached project from previous session if available.
   // Nothing is saved until this finishes, so the sample project never overwrites saved work.
@@ -152,8 +154,8 @@ export default function App() {
 
   // Sync audio engine with playback, position, and mute states
   useEffect(() => {
-    audioEngine.syncPlayback(currentTime, isPlaying, project.audioTracks, project.mutedTracks);
-  }, [currentTime, isPlaying, project.audioTracks, project.mutedTracks]);
+    audioEngine.syncPlayback(currentTime, isPlaying, project.audioTracks, project.videoClips, project.mutedTracks);
+  }, [currentTime, isPlaying, project.audioTracks, project.videoClips, project.mutedTracks]);
 
   // Spacebar play/pause and keyboard shortcuts.
   // The window listener is registered once and always calls the latest handler through a ref,
@@ -339,6 +341,7 @@ export default function App() {
         onChangePreviewLang={setPreviewLang}
         onOpenThumbnailModal={() => setIsThumbnailOpen(true)}
         onOpenExportModal={() => setIsExportOpen(true)}
+        onOpenAutoEditModal={() => setIsAutoEditOpen(true)}
         onOpenShortcutsModal={() => setIsShortcutsOpen(true)}
         onUndo={handleUndo}
         onRedo={handleRedo}
@@ -550,6 +553,19 @@ export default function App() {
       <ShortcutsModal
         isOpen={isShortcutsOpen}
         onClose={() => setIsShortcutsOpen(false)}
+      />
+
+      <AutoEditModal
+        isOpen={isAutoEditOpen}
+        onClose={() => setIsAutoEditOpen(false)}
+        project={project}
+        onApply={(edited) => {
+          setIsPlaying(false);
+          audioEngine.pauseAll();
+          selectItem('clip', null);
+          setCurrentTime(0);
+          handleUpdateProject(edited);
+        }}
       />
     </div>
   );

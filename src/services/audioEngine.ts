@@ -3,18 +3,46 @@
  * Supports multi-track playback (Narration, Ambience, BGM), automatic BGM ducking,
  * microphone recording, a real output level meter, and loudness measurement (LUFS).
  */
-import { AudioTrackItem } from '../types';
+import { AudioTrackItem, ProjectData, VideoClipItem } from '../types';
 
-/** Whether a narration with a sound file is playing at `time` and its track is not muted */
+/**
+ * Timeline spans where someone is heard speaking: narrations with a sound file, and talking
+ * detected in the original sound of video clips. The BGM ducks under these.
+ */
+export function getSpeechSpans(
+  audioTracks: AudioTrackItem[],
+  videoClips: VideoClipItem[],
+  mutedTracks?: ProjectData['mutedTracks']
+): [number, number][] {
+  const spans: [number, number][] = [];
+  if (!mutedTracks?.narration) {
+    for (const t of audioTracks) {
+      if (t.type === 'narration' && t.dataUrl) spans.push([t.startTime, t.startTime + t.duration]);
+    }
+  }
+  if (!mutedTracks?.video) {
+    for (const clip of videoClips) {
+      if (clip.type !== 'video' || !clip.dataUrl || (clip.volume ?? 1) === 0) continue;
+      const clipEnd = clip.startTime + clip.duration;
+      // speechRanges are in source-file seconds; map them onto the timeline and keep the part inside the clip
+      for (const [s, e] of clip.speechRanges || []) {
+        const start = Math.max(clip.startTime, clip.startTime + (s - clip.trimStart));
+        const end = Math.min(clipEnd, clip.startTime + (e - clip.trimStart));
+        if (end > start) spans.push([start, end]);
+      }
+    }
+  }
+  return spans;
+}
+
+/** Whether someone is heard speaking at `time` (a narration, or talking in a video clip) */
 export function isNarrationAudibleAt(
   audioTracks: AudioTrackItem[],
+  videoClips: VideoClipItem[],
   time: number,
-  mutedTracks?: { narration?: boolean }
+  mutedTracks?: ProjectData['mutedTracks']
 ): boolean {
-  if (mutedTracks?.narration) return false;
-  return audioTracks.some(
-    (t) => t.type === 'narration' && !!t.dataUrl && time >= t.startTime && time < t.startTime + t.duration
-  );
+  return getSpeechSpans(audioTracks, videoClips, mutedTracks).some(([s, e]) => time >= s && time < e);
 }
 
 /**
@@ -120,12 +148,13 @@ class AudioEngine {
     currentTime: number,
     isPlaying: boolean,
     audioTracks: AudioTrackItem[],
-    mutedTracks?: { narration?: boolean; ambience?: boolean; bgm?: boolean }
+    videoClips: VideoClipItem[],
+    mutedTracks?: ProjectData['mutedTracks']
   ) {
     this.init();
 
-    // Narration actually being heard right now (same rule as the export): BGM ducks only under audible speech
-    const isNarrationActive = isNarrationAudibleAt(audioTracks, currentTime, mutedTracks);
+    // Speech actually being heard right now (same rule as the export): BGM ducks only under audible speech
+    const isNarrationActive = isNarrationAudibleAt(audioTracks, videoClips, currentTime, mutedTracks);
 
     // Manage each track's HTMLAudioElement
     for (const track of audioTracks) {

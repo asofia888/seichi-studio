@@ -66,6 +66,7 @@ export interface VideoClipItem {
   trimStart: number;
   trimEnd: number;
   volume?: number;      // 動画の元音声の音量 0.0 - 1.0（未設定は1.0）
+  speechRanges?: [number, number][]; // 元動画内で人が話している区間（素材ファイル内の秒）。BGMはこの間も下がる
 
   // ケン・バーンズ効果 (写真用)
   kenBurns?: {

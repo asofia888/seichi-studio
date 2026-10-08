@@ -821,7 +821,7 @@ export const Timeline: React.FC<TimelineProps> = ({
                   const displayStart = isBeingDragged && ghostPreview ? ghostPreview.startTime : audio.startTime;
                   const displayDur = isBeingDragged && ghostPreview ? ghostPreview.duration : audio.duration;
 
-                  const isNarrationNow = isNarrationAudibleAt(project.audioTracks, currentTime, mutedTracks);
+                  const isNarrationNow = isNarrationAudibleAt(project.audioTracks, project.videoClips, currentTime, mutedTracks);
 
                   return (
                     <div

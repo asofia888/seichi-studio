@@ -46,12 +46,22 @@ export const VideoPreview: React.FC<VideoPreviewProps> = ({
   const [levels, setLevels] = useState({ left: -Infinity, right: -Infinity, peak: -Infinity });
 
   // Re-render canvas whenever currentTime, project, or language changes
+  const renderRef = useRef(() => {});
   useEffect(() => {
-    if (!canvasRef.current) return;
-    const ctx = canvasRef.current.getContext('2d');
-    if (!ctx) return;
-    canvasRenderer.renderFrame(ctx, project, currentTime, previewLang, isPlaying);
+    renderRef.current = () => {
+      const ctx = canvasRef.current?.getContext('2d');
+      if (ctx) canvasRenderer.renderFrame(ctx, project, currentTime, previewLang, isPlaying);
+    };
+    renderRef.current();
   }, [currentTime, project, previewLang, isPlaying]);
+
+  // ...and when a video clip's frame arrives after the playhead moved (e.g. a seek while paused)
+  useEffect(() => {
+    canvasRenderer.onVideoFrameReady = () => renderRef.current();
+    return () => {
+      canvasRenderer.onVideoFrameReady = null;
+    };
+  }, []);
 
   // Level meter: read the engine's output analysers every frame while playing
   useEffect(() => {

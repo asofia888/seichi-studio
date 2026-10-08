@@ -26,6 +26,7 @@ import {
 } from 'mediabunny';
 import { ProjectData, SupportedLanguage, VideoClipItem } from '../types';
 import { canvasRenderer, ExportRenderOptions } from './canvasRenderer';
+import { getSpeechSpans } from './audioEngine';
 
 export interface ExportProgress {
   percentage: number;
@@ -169,11 +170,10 @@ async function renderAudioMix(project: ProjectData, duration: number, warnings: 
   const ctx = new OfflineAudioContext(2, Math.max(1, Math.ceil(duration * SAMPLE_RATE)), SAMPLE_RATE);
   let hasSound = false;
 
-  const narrationSpans: [number, number][] = muted.narration
-    ? []
-    : project.audioTracks
-        .filter((t) => t.type === 'narration' && t.dataUrl)
-        .map((t): [number, number] => [t.startTime, Math.min(duration, t.startTime + t.duration)]);
+  // Narrations and talking in video clips: the BGM ducks under both
+  const narrationSpans = getSpeechSpans(project.audioTracks, project.videoClips, muted)
+    .map(([s, e]): [number, number] => [s, Math.min(duration, e)])
+    .filter(([s, e]) => e > s);
 
   for (const track of project.audioTracks) {
     if (muted[track.type] || !track.dataUrl) continue;

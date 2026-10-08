@@ -121,11 +121,17 @@ export class CanvasRenderer {
       vid.crossOrigin = 'anonymous';
       vid.playsInline = true;
       vid.src = url;
+      // Loading and seeking finish after the frame was drawn; while paused nothing else would redraw it
+      vid.addEventListener('loadeddata', () => this.onVideoFrameReady?.());
+      vid.addEventListener('seeked', () => this.onVideoFrameReady?.());
       this.videoCache.set(id, vid);
       audioEngine.connectMediaElement(vid); // so the level meter includes the clip's own sound
     }
     return vid;
   }
+
+  /** Called when a preview video has a new frame to show (it finished loading or seeking) */
+  public onVideoFrameReady: (() => void) | null = null;
 
   /**
    * The media clip shown at this time: undefined during the OP/ED cards,
