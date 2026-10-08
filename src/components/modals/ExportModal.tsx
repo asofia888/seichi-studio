@@ -92,6 +92,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
           {!isExporting && (
             <button
               onClick={onClose}
+              aria-label="閉じる"
               className="p-1 text-gray-400 hover:text-white rounded transition-colors"
             >
               <X className="w-5 h-5" />

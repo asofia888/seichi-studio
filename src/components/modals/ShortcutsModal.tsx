@@ -33,6 +33,7 @@ export const ShortcutsModal: React.FC<ShortcutsModalProps> = ({ isOpen, onClose 
           </div>
           <button
             onClick={onClose}
+            aria-label="閉じる"
             className="p-1 rounded text-gray-400 hover:text-white hover:bg-[#20293a] transition-colors"
           >
             <X className="w-4 h-4" />

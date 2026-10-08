@@ -114,6 +114,8 @@ export const VideoPreview: React.FC<VideoPreviewProps> = ({
         >
           <canvas
             ref={canvasRef}
+            role="img"
+            aria-label="プレビュー"
             className="w-full h-full object-contain pointer-events-none"
           />
 

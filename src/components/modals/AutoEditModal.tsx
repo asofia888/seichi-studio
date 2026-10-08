@@ -131,7 +131,7 @@ export const AutoEditModal: React.FC<AutoEditModalProps> = ({ isOpen, onClose, p
             <span>おまかせ編集（動画から下書きを自動作成）</span>
           </div>
           {!isRunning && (
-            <button onClick={handleClose} className="p-1 text-gray-400 hover:text-white rounded transition-colors">
+            <button onClick={handleClose} aria-label="閉じる" className="p-1 text-gray-400 hover:text-white rounded transition-colors">
               <X className="w-5 h-5" />
             </button>
           )}

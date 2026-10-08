@@ -220,7 +220,12 @@ export const Timeline: React.FC<TimelineProps> = ({
     };
 
     const handleMouseUp = () => {
-      if (ghostPreview && dragState) {
+      // A click without moving only selects the item; it must not become an undo step
+      if (
+        ghostPreview &&
+        dragState &&
+        (ghostPreview.startTime !== dragState.initialStartTime || ghostPreview.duration !== dragState.initialDuration)
+      ) {
         // Apply changes to project state
         const { itemType, itemId, initialStartTime, initialTrimStart } = dragState;
         const { startTime, duration: newDur } = ghostPreview;
@@ -310,7 +315,7 @@ export const Timeline: React.FC<TimelineProps> = ({
   }
 
   return (
-    <div className="h-72 bg-[#0c0f15] border-t border-[#1d2430] flex flex-col select-none">
+    <section aria-label="タイムライン" className="h-72 bg-[#0c0f15] border-t border-[#1d2430] flex flex-col select-none">
       {/* Timeline Toolbar Header */}
       <div className="h-8 bg-[#131722] border-b border-[#202735] px-4 flex items-center justify-between text-xs text-[#8c97a8]">
         {/* Left: Title & Editing Tools */}
@@ -708,6 +713,7 @@ export const Timeline: React.FC<TimelineProps> = ({
                   return (
                     <div
                       key={audio.id}
+                      title={audio.name}
                       onMouseDown={(e) => startDrag(e, 'audio', audio.id, 'move', audio.startTime, audio.duration, audio.trimStart)}
                       className={`group absolute h-9 rounded px-2 flex items-center justify-between text-[11px] bg-red-950/80 border border-red-500 text-red-100 truncate cursor-move transition-all overflow-hidden ${
                         isSelected ? 'ring-2 ring-[#D4AF37] border-[#D4AF37] shadow-xl z-20 brightness-110' : 'hover:brightness-125'
@@ -767,6 +773,7 @@ export const Timeline: React.FC<TimelineProps> = ({
                   return (
                     <div
                       key={audio.id}
+                      title={audio.name}
                       onMouseDown={(e) => startDrag(e, 'audio', audio.id, 'move', audio.startTime, audio.duration, audio.trimStart)}
                       className={`group absolute h-9 rounded px-2 flex items-center justify-between text-[11px] bg-emerald-950/70 border border-emerald-600/70 text-emerald-100 truncate cursor-move overflow-hidden ${
                         isSelected ? 'ring-2 ring-[#D4AF37] border-[#D4AF37] shadow-xl z-20 brightness-110' : 'hover:brightness-125'
@@ -826,6 +833,7 @@ export const Timeline: React.FC<TimelineProps> = ({
                   return (
                     <div
                       key={audio.id}
+                      title={audio.name}
                       onMouseDown={(e) => startDrag(e, 'audio', audio.id, 'move', audio.startTime, audio.duration, audio.trimStart)}
                       className={`group absolute h-9 rounded px-2 flex items-center justify-between text-[11px] bg-indigo-950/70 border border-indigo-500/70 text-indigo-100 truncate cursor-move overflow-hidden ${
                         isSelected ? 'ring-2 ring-[#D4AF37] border-[#D4AF37] shadow-xl z-20 brightness-110' : 'hover:brightness-125'
@@ -896,6 +904,6 @@ export const Timeline: React.FC<TimelineProps> = ({
           </div>
         </div>
       </div>
-    </div>
+    </section>
   );
 };
