@@ -3,6 +3,7 @@ import { ProjectData, SupportedLanguage } from '../types';
 import type { ProjectUpdate } from '../services/projectHistory';
 import { exportProjectAsJSON, restoreMediaUrls } from '../services/storage';
 import { shrinePresets } from '../services/sampleData';
+import { notify } from '../services/notifications';
 import {
   Sparkles,
   Download,
@@ -66,15 +67,19 @@ export const Header: React.FC<HeaderProps> = ({
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
+    const failed = () =>
+      notify('プロジェクトファイルの読み込みに失敗しました。有効なJSONファイルかご確認ください。', 'error');
     reader.onload = (event) => {
       try {
         const loaded = JSON.parse(event.target?.result as string);
-        if (loaded && loaded.title) {
-          // Media files are not inside the JSON; reconnect them from this browser's storage
-          restoreMediaUrls(loaded).then(onUpdateProject);
+        if (!loaded || !loaded.title) {
+          failed();
+          return;
         }
-      } catch (err) {
-        alert('プロジェクトファイルの読み込みに失敗しました。有効なJSONファイルかご確認ください。');
+        // Media files are not inside the JSON; reconnect them from this browser's storage
+        restoreMediaUrls(loaded).then(onUpdateProject).catch(failed);
+      } catch {
+        failed();
       }
     };
     reader.readAsText(file);

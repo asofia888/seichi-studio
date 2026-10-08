@@ -2,7 +2,8 @@ import React, { useEffect, useRef, useState } from 'react';
 import { ProjectData, AudioTrackItem } from '../../types';
 import type { ProjectUpdate } from '../../services/projectHistory';
 import { audioEngine, LOUDNESS_PROFILES, LoudnessProfile } from '../../services/audioEngine';
-import { saveMediaBlob } from '../../services/storage';
+import { saveMediaFile } from '../../services/storage';
+import { notify } from '../../services/notifications';
 import { WaveformVisualizer } from '../WaveformVisualizer';
 import {
   Mic,
@@ -221,8 +222,11 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({
     const file = e.target.files?.[0];
     if (!file) return;
 
-    const blobKey = `audio_${Date.now()}`;
-    await saveMediaBlob(blobKey, file);
+    // If the file cannot be kept in this browser, it is still usable until the page is reloaded
+    const blobKey = await saveMediaFile(file).catch(() => {
+      notify(`「${file.name}」をブラウザに保存できませんでした。ページを再読み込みすると、この音声は鳴らなくなります。`, 'error');
+      return undefined;
+    });
     const url = URL.createObjectURL(file);
     const waveform = await audioEngine.extractWaveform(file, 50);
 

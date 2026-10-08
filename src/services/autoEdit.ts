@@ -15,7 +15,7 @@ import {
 } from '../types';
 import { analyzeVideo, captureFrameJpeg, QUALITY_STEP, type VideoAnalysis } from './videoAnalysis';
 import { generateEditScript, type ClaudeModelId, type EditScript } from './claudeApi';
-import { saveMediaBlob } from './storage';
+import { saveMediaFile } from './storage';
 
 export interface AutoEditOptions {
   /** Length of the finished video including the OP/ED cards (seconds) */
@@ -313,7 +313,7 @@ function buildProject(
   base: ProjectData,
   videos: VideoAnalysis[],
   segments: PlannedSegment[],
-  media: Map<number, { dataUrl: string; blobKey: string }>,
+  media: Map<number, { dataUrl: string; blobKey?: string }>,
   script: EditScript | null,
   shrineName: string
 ): { project: ProjectData; telopCount: number; chapterCount: number; hasAccessCard: boolean } {
@@ -578,14 +578,15 @@ export async function runAutoEdit(
 
   // 5. Keep the files in this browser so the project survives a reload
   onProgress({ percentage: 95, statusText: '素材をブラウザに保存中...' });
-  const media = new Map<number, { dataUrl: string; blobKey: string }>();
+  const media = new Map<number, { dataUrl: string; blobKey?: string }>();
   const usedVideos = [...new Set(segments.map((s) => s.video))];
   for (const index of usedVideos) {
     signal?.throwIfAborted();
     const file = videos[index].file;
-    const blobKey = `blob_${Date.now()}_${index}`;
-    await saveMediaBlob(blobKey, file).catch(() => {
+    // Running the automatic edit again reuses the copies already stored
+    const blobKey = await saveMediaFile(file).catch(() => {
       warnings.push(`「${file.name}」をブラウザに保存できませんでした。ページを再読み込みすると、この動画は表示されなくなります。`);
+      return undefined;
     });
     media.set(index, { dataUrl: URL.createObjectURL(file), blobKey });
   }

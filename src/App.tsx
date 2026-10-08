@@ -6,14 +6,16 @@
 import React, { useState, useEffect, useLayoutEffect, useRef, useReducer, useCallback } from 'react';
 import { ProjectData, SupportedLanguage } from './types';
 import { initialProjectData } from './services/sampleData';
-import { loadLastProject, saveProjectToStorage, saveMediaBlob } from './services/storage';
+import { loadLastProject, saveProjectToStorage, saveMediaBlob, cleanUpUnusedMedia } from './services/storage';
 import { audioEngine } from './services/audioEngine';
 import { splitItemAtTime } from './services/timelineEdit';
 import { historyReducer, createHistory, ProjectUpdate } from './services/projectHistory';
+import { notify } from './services/notifications';
 
 import { Header } from './components/Header';
 import { VideoPreview } from './components/VideoPreview';
 import { Timeline } from './components/Timeline';
+import { Notifications } from './components/Notifications';
 
 import { MediaPanel } from './components/panels/MediaPanel';
 import { TelopPanel } from './components/panels/TelopPanel';
@@ -82,6 +84,8 @@ export default function App() {
       .then((cached) => {
         if (cached && cached.title) {
           dispatchHistory({ type: 'load', project: cached });
+          // Only with the saved project in hand, so files it uses are never taken for unused ones
+          cleanUpUnusedMedia(cached).catch((e) => console.warn('Failed to clean up unused media:', e));
         }
       })
       .finally(() => setIsRestored(true));
@@ -250,12 +254,12 @@ export default function App() {
   const handleSplitAtPlayhead = () => {
     const selectedId = selectedAudioId || selectedSubId || selectedClipId;
     if (!selectedId) {
-      alert('分割するアイテム（動画クリップ、字幕、音声トラック）をタイムライン上で選択してください。');
+      notify('分割するアイテム（動画クリップ、字幕、音声トラック）をタイムライン上で選択してください。');
       return;
     }
     const updated = splitItemAtTime(project, selectedId, currentTime);
     if (!updated) {
-      alert('選択中のアイテムが現在の再生位置（赤線）と交差していないか、端に近すぎるため分割できません。');
+      notify('選択中のアイテムが現在の再生位置（赤線）と交差していないか、端に近すぎるため分割できません。');
       return;
     }
     handleUpdateProject(updated);
@@ -271,7 +275,7 @@ export default function App() {
         setIsRecordingMic(true);
         setIsPlaying(true); // Automatically advance playhead during voiceover
       } catch (err: any) {
-        alert(`マイクの起動に失敗しました: ${err.message}`);
+        notify(`マイクの起動に失敗しました: ${err.message}`, 'error');
       }
     } else {
       // Stop recording and place on timeline
@@ -286,7 +290,9 @@ export default function App() {
         // Keep the recording in IndexedDB so it survives a reload (the blob: URL does not).
         // If saving fails, the take is still usable in this session.
         const blobKey = `narration_${Date.now()}`;
-        await saveMediaBlob(blobKey, blob).catch((e) => console.warn('Failed to store recording:', e));
+        await saveMediaBlob(blobKey, blob).catch(() =>
+          notify('録音をブラウザに保存できませんでした。ページを再読み込みすると、この録音は鳴らなくなります。', 'error')
+        );
 
         const newNarration = {
           id: `narration_${Date.now()}`,
@@ -309,7 +315,7 @@ export default function App() {
           duration: Math.max(prev.duration, recordEnd),
         }));
       } catch (err: any) {
-        alert(`録音停止時にエラーが発生しました: ${err.message}`);
+        notify(`録音停止時にエラーが発生しました: ${err.message}`, 'error');
         setIsRecordingMic(false);
       }
     }
@@ -554,6 +560,8 @@ export default function App() {
         isOpen={isShortcutsOpen}
         onClose={() => setIsShortcutsOpen(false)}
       />
+
+      <Notifications />
 
       <AutoEditModal
         isOpen={isAutoEditOpen}

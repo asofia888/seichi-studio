@@ -1,7 +1,8 @@
 import React, { useRef } from 'react';
 import { ProjectData, VideoClipItem } from '../../types';
 import type { ProjectUpdate } from '../../services/projectHistory';
-import { saveMediaBlob } from '../../services/storage';
+import { saveMediaFile } from '../../services/storage';
+import { notify } from '../../services/notifications';
 import {
   Upload,
   Plus,
@@ -66,8 +67,11 @@ export const MediaPanel: React.FC<MediaPanelProps> = ({
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
       const isVideo = file.type.startsWith('video');
-      const blobKey = `blob_${Date.now()}_${i}`;
-      await saveMediaBlob(blobKey, file);
+      // If the file cannot be kept in this browser, it is still usable until the page is reloaded
+      const blobKey = await saveMediaFile(file).catch(() => {
+        notify(`「${file.name}」をブラウザに保存できませんでした。ページを再読み込みすると、この素材は表示されなくなります。`, 'error');
+        return undefined;
+      });
       const url = URL.createObjectURL(file);
       // Videos use their real length (10s if it cannot be read); photos show for 8s
       const clipDuration = isVideo ? (await readVideoDuration(url)) ?? 10 : 8;

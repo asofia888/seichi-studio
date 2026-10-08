@@ -8,8 +8,14 @@ const DB_VERSION = 1;
 const STORE_BLOBS = 'media_blobs';
 const STORE_PROJECTS = 'projects';
 const LAST_PROJECT_KEY = 'last_project';
+// Kept next to the project: when each stored file was first found unused (ms)
+const UNUSED_MEDIA_KEY = 'unused_media_since';
 // Earlier versions kept the project in localStorage (5MB limit, failed silently when full)
 const LEGACY_LOCALSTORAGE_KEY = 'sacred_studio_last_project';
+
+// Files the project no longer uses are deleted only after this long, so a project file (.json)
+// saved in the meantime still finds its media when it is loaded in this browser
+export const UNUSED_MEDIA_GRACE_MS = 14 * 24 * 60 * 60 * 1000;
 
 // Reuse one connection instead of opening a new one on every save
 let dbPromise: Promise<IDBDatabase> | null = null;
@@ -62,14 +68,78 @@ export async function getMediaBlob(key: string): Promise<Blob | null> {
   });
 }
 
-export async function deleteMediaBlob(key: string): Promise<void> {
+/**
+ * Keep a file the user added in this browser and return its key. The same file added again
+ * (same name, size and modification time) reuses the stored copy instead of storing another one.
+ */
+export async function saveMediaFile(file: File): Promise<string> {
+  const key = `file_${file.size}_${file.lastModified}_${file.name}`;
+  const db = await openDatabase();
+  const isStored = await new Promise<boolean>((resolve, reject) => {
+    const req = db.transaction(STORE_BLOBS, 'readonly').objectStore(STORE_BLOBS).count(key);
+    req.onsuccess = () => resolve(req.result > 0);
+    req.onerror = () => reject(req.error);
+  });
+  if (!isStored) await saveMediaBlob(key, file);
+  return key;
+}
+
+/** The media files a project plays */
+export function mediaKeysInUse(project: ProjectData): Set<string> {
+  return new Set(
+    [...project.videoClips, ...project.audioTracks].flatMap((item) => (item.blobKey ? [item.blobKey] : []))
+  );
+}
+
+/**
+ * Which stored files to delete now: those unused for UNUSED_MEDIA_GRACE_MS. Returns the new
+ * record of when each file still kept was first found unused (files in use are not in it).
+ */
+export function planMediaCleanup(
+  storedKeys: string[],
+  usedKeys: Set<string>,
+  unusedSince: Record<string, number>,
+  now: number
+): { toDelete: string[]; unusedSince: Record<string, number> } {
+  const toDelete: string[] = [];
+  const stillUnused: Record<string, number> = {};
+  for (const key of storedKeys) {
+    if (usedKeys.has(key)) continue;
+    const since = unusedSince[key] ?? now;
+    if (now - since >= UNUSED_MEDIA_GRACE_MS) {
+      toDelete.push(key);
+    } else {
+      stillUnused[key] = since;
+    }
+  }
+  return { toDelete, unusedSince: stillUnused };
+}
+
+/**
+ * Delete stored files that `project` (the saved project, read at startup) has not used for
+ * UNUSED_MEDIA_GRACE_MS. Run only at startup: during a session, undo can bring back a clip
+ * whose file the current project no longer uses. Returns how many files were deleted.
+ */
+export async function cleanUpUnusedMedia(project: ProjectData, now = Date.now()): Promise<number> {
+  const usedKeys = mediaKeysInUse(project);
   const db = await openDatabase();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_BLOBS, 'readwrite');
-    const store = tx.objectStore(STORE_BLOBS);
-    const req = store.delete(key);
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
+    const tx = db.transaction([STORE_BLOBS, STORE_PROJECTS], 'readwrite');
+    const blobs = tx.objectStore(STORE_BLOBS);
+    const meta = tx.objectStore(STORE_PROJECTS);
+    const keysReq = blobs.getAllKeys();
+    const sinceReq = meta.get(UNUSED_MEDIA_KEY);
+    let deleted = 0;
+    // Requests in a transaction finish in order, so the keys are ready here too
+    sinceReq.onsuccess = () => {
+      const plan = planMediaCleanup(keysReq.result.map(String), usedKeys, sinceReq.result ?? {}, now);
+      for (const key of plan.toDelete) blobs.delete(key);
+      meta.put(plan.unusedSince, UNUSED_MEDIA_KEY);
+      deleted = plan.toDelete.length;
+    };
+    tx.oncomplete = () => resolve(deleted);
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
   });
 }
 

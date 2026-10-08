@@ -10,6 +10,7 @@ import {
   saveClaudeModel,
 } from '../../services/claudeApi';
 import { downloadSRTFile } from '../../services/srtExporter';
+import { notify } from '../../services/notifications';
 import {
   Globe,
   Key,
@@ -100,7 +101,7 @@ export const TranslationPanel: React.FC<TranslationPanelProps> = ({
       const en = await translateWithClaude(sub.text.ja, savedApiKey, model, project.glossary);
       applyTranslations([{ id: sub.id, ja: sub.text.ja, en }]);
     } catch (err: any) {
-      alert(`翻訳エラー: ${err.message}`);
+      notify(`翻訳エラー: ${err.message}`, 'error');
     } finally {
       setTranslatingIndex(null);
     }
@@ -125,7 +126,7 @@ export const TranslationPanel: React.FC<TranslationPanelProps> = ({
       setTimeout(() => setStatusMessage(null), 4000);
     } catch (e: any) {
       setStatusMessage(null);
-      alert(`${results.length}行を翻訳したところでエラーが発生しました（翻訳済みの行は反映されます）:\n${e.message}`);
+      notify(`${results.length}行を翻訳したところでエラーが発生しました（翻訳済みの行は反映されます）:\n${e.message}`, 'error');
     } finally {
       // Keep the lines that finished, even if a later line failed
       if (results.length > 0) {

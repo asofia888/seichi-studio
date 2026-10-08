@@ -4,10 +4,12 @@
 import { MultilingualSubtitleItem, ChapterItem, SupportedLanguage } from '../types';
 
 function formatSecondsToSRTTime(seconds: number): string {
-  const hrs = Math.floor(seconds / 3600);
-  const mins = Math.floor((seconds % 3600) / 60);
-  const secs = Math.floor(seconds % 60);
-  const ms = Math.floor((seconds % 1) * 1000);
+  // Whole milliseconds first: 2.3 % 1 is 0.2999…, which would be written as ,299
+  const totalMs = Math.round(Math.max(0, seconds) * 1000);
+  const hrs = Math.floor(totalMs / 3_600_000);
+  const mins = Math.floor((totalMs % 3_600_000) / 60_000);
+  const secs = Math.floor((totalMs % 60_000) / 1000);
+  const ms = totalMs % 1000;
 
   const pad = (n: number, z = 2) => String(n).padStart(z, '0');
   return `${pad(hrs)}:${pad(mins)}:${pad(secs)},${pad(ms, 3)}`;
