@@ -336,6 +336,7 @@ function buildProject(
       duration: round2(seg.end - seg.start),
       trimStart: round2(seg.start),
       trimEnd: round2(seg.end),
+      sourceDuration: v.duration,
       volume: seg.hasSpeech ? 1 : SCENERY_VOLUME,
       ...(v.speechRanges.length > 0 ? { speechRanges: v.speechRanges } : {}),
     };

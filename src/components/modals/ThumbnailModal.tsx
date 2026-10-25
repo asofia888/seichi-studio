@@ -1,6 +1,7 @@
 import React, { useRef, useEffect, useState } from 'react';
 import { ProjectData } from '../../types';
 import { canvasRenderer } from '../../services/canvasRenderer';
+import { pictureAt, pictureLayers } from '../../services/composition';
 import {
   X,
   Download,
@@ -34,13 +35,14 @@ export const ThumbnailModal: React.FC<ThumbnailModalProps> = ({
   const width = isLandscape ? 1280 : 720;
   const height = isLandscape ? 720 : 1280;
 
-  // The photo under the playhead may still be loading when the modal opens; redraw once it is ready
+  // The photos under the playhead may still be loading when the modal opens; redraw once they are ready
   const [imageReadyTick, setImageReadyTick] = useState(0);
   useEffect(() => {
     if (!isOpen) return;
-    const clip = canvasRenderer.getActiveClip(project, currentTime);
-    if (clip?.type === 'image' && clip.dataUrl) {
-      canvasRenderer.preloadImage(clip.dataUrl).then(() => setImageReadyTick((n) => n + 1)).catch(() => {});
+    for (const { clip } of pictureLayers(pictureAt(project, currentTime))) {
+      if (clip.type === 'image' && clip.dataUrl) {
+        canvasRenderer.preloadImage(clip.dataUrl).then(() => setImageReadyTick((n) => n + 1)).catch(() => {});
+      }
     }
   }, [isOpen, project, currentTime]);
 

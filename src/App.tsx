@@ -8,7 +8,7 @@ import { ProjectData, SupportedLanguage } from './types';
 import { initialProjectData } from './services/sampleData';
 import { loadLastProject, saveProjectToStorage, saveMediaBlob, cleanUpUnusedMedia } from './services/storage';
 import { audioEngine } from './services/audioEngine';
-import { splitItemAtTime } from './services/timelineEdit';
+import { rippleDeleteClip, splitItemAtTime } from './services/timelineEdit';
 import { historyReducer, createHistory, ProjectUpdate } from './services/projectHistory';
 import { notify } from './services/notifications';
 
@@ -130,14 +130,17 @@ export default function App() {
   const handleUndo = () => dispatchHistory({ type: 'undo' });
   const handleRedo = () => dispatchHistory({ type: 'redo' });
 
-  // Playback timer loop
+  // Playback timer loop, paced by the audio clock so the picture stays with the sound
   useEffect(() => {
     let animId: number;
-    let lastTimestamp = performance.now();
+    let last = audioEngine.now();
 
-    const loop = (now: number) => {
+    const loop = () => {
+      const now = audioEngine.now();
+      // When the audio clock starts running, skip one frame rather than compare two different clocks
+      const delta = now.isAudioClock === last.isAudioClock ? Math.max(0, now.seconds - last.seconds) : 0;
+      last = now;
       if (isPlaying) {
-        const delta = (now - lastTimestamp) / 1000;
         setCurrentTime((prev) => {
           const next = prev + delta;
           if (next >= project.duration) {
@@ -148,13 +151,17 @@ export default function App() {
           return next;
         });
       }
-      lastTimestamp = now;
       animId = requestAnimationFrame(loop);
     };
 
     animId = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(animId);
   }, [isPlaying, project.duration]);
+
+  // When the video gets shorter (e.g. its last clip was deleted), keep the playhead inside it
+  useEffect(() => {
+    setCurrentTime((t) => Math.min(t, project.duration));
+  }, [project.duration]);
 
   // Sync audio engine with playback, position, and mute states
   useEffect(() => {
@@ -185,11 +192,11 @@ export default function App() {
         });
       } else if (e.code === 'ArrowLeft') {
         e.preventDefault();
-        const step = e.shiftKey ? 1.0 : 1 / 30;
+        const step = e.shiftKey ? 1.0 : 1 / (project.fps || 30);
         setCurrentTime((prev) => Math.max(0, prev - step));
       } else if (e.code === 'ArrowRight') {
         e.preventDefault();
-        const step = e.shiftKey ? 1.0 : 1 / 30;
+        const step = e.shiftKey ? 1.0 : 1 / (project.fps || 30);
         setCurrentTime((prev) => Math.min(project.duration, prev + step));
       } else if (e.code === 'Home') {
         e.preventDefault();
@@ -212,10 +219,8 @@ export default function App() {
         setIsShortcutsOpen(false);
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
         if (selectedClipId) {
-          handleUpdateProject({
-            ...project,
-            videoClips: project.videoClips.filter((c) => c.id !== selectedClipId),
-          });
+          // What follows on the main track moves up, so no empty stretch is left behind
+          handleUpdateProject(rippleDeleteClip(project, selectedClipId));
           setSelectedClipId(null);
         } else if (selectedSubId) {
           handleUpdateProject({
@@ -304,15 +309,15 @@ export default function App() {
           dataUrl: url,
           blobKey,
           isRecorded: true,
+          sourceDuration: duration,
           waveform,
         };
 
-        // Applied to the latest project: edits made while recording or saving are kept
-        const recordEnd = recordStartTimeRef.current + duration + 2;
+        // Applied to the latest project: edits made while recording or saving are kept.
+        // A take that runs past the end makes the video longer (see fitDurationToContent).
         handleUpdateProject((prev) => ({
           ...prev,
           audioTracks: [...prev.audioTracks, newNarration],
-          duration: Math.max(prev.duration, recordEnd),
         }));
       } catch (err: any) {
         notify(`録音停止時にエラーが発生しました: ${err.message}`, 'error');
@@ -448,6 +453,7 @@ export default function App() {
                 onUpdateProject={handleUpdateProject}
                 selectedClipId={selectedClipId}
                 onSelectClip={(id) => selectItem('clip', id)}
+                currentTime={currentTime}
               />
             )}
             {activeTab === 'telop' && (
@@ -523,10 +529,8 @@ export default function App() {
         onSelectTrackItem={handleSelectTrackItem}
         selectedItemId={selectedAudioId || selectedSubId || selectedClipId}
         onDeleteClip={(id) => {
-          handleUpdateProject({
-            ...project,
-            videoClips: project.videoClips.filter((c) => c.id !== id),
-          });
+          handleUpdateProject(rippleDeleteClip(project, id));
+          setSelectedClipId(null);
         }}
         onDeleteSubtitle={(id) => {
           handleUpdateProject({

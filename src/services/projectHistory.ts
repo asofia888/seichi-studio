@@ -1,7 +1,9 @@
 /**
- * Project state with undo/redo history (a pure reducer for useReducer)
+ * Project state with undo/redo history (a pure reducer for useReducer).
+ * Every project that enters it has its length fitted to its content (fitDurationToContent).
  */
 import { ProjectData } from '../types';
+import { fitDurationToContent } from './timelineEdit';
 
 /**
  * A new project, or a function that derives it from the latest project.
@@ -29,14 +31,15 @@ const MAX_UNDO_STEPS = 50;
 const COALESCE_MS = 800;
 
 export function createHistory(project: ProjectData): ProjectHistory {
-  return { past: [], present: project, future: [], lastEditAt: 0 };
+  return { past: [], present: fitDurationToContent(project), future: [], lastEditAt: 0 };
 }
 
 export function historyReducer(state: ProjectHistory, action: HistoryAction): ProjectHistory {
   switch (action.type) {
     case 'update': {
-      const next = typeof action.update === 'function' ? action.update(state.present) : action.update;
-      if (next === state.present) return state;
+      const edited = typeof action.update === 'function' ? action.update(state.present) : action.update;
+      if (edited === state.present) return state;
+      const next = fitDurationToContent(edited, state.present.duration);
       const continuesBurst = action.at - state.lastEditAt < COALESCE_MS;
       return {
         past: continuesBurst ? state.past : [...state.past, state.present].slice(-MAX_UNDO_STEPS),

@@ -1,8 +1,18 @@
 import React, { useRef } from 'react';
-import { ProjectData, VideoClipItem } from '../../types';
+import { ProjectData, TransitionType, VideoClipItem } from '../../types';
 import type { ProjectUpdate } from '../../services/projectHistory';
 import { saveMediaFile } from '../../services/storage';
 import { notify } from '../../services/notifications';
+import { DEFAULT_VIGNETTE } from '../../services/canvasRenderer';
+import { clipSpeed, isOverlayClip } from '../../services/composition';
+import {
+  clipEditLimits,
+  moveClipInOrder,
+  moveClipToTrack,
+  openOverlaySpan,
+  rippleDeleteClip,
+  setClipSpeed,
+} from '../../services/timelineEdit';
 import {
   Upload,
   Plus,
@@ -11,7 +21,28 @@ import {
   Sparkles,
   Image as ImageIcon,
   Film,
+  Layers,
+  ArrowUp,
+  ArrowDown,
 } from 'lucide-react';
+
+const SPEEDS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4];
+const DEFAULT_TRANSITION_SEC = 0.8;
+// A photo laid over the main track as B-roll shows this long
+const OVERLAY_PHOTO_SEC = 4;
+const TRANSITION_CHOICES: { type: TransitionType | 'cut'; label: string }[] = [
+  { type: 'cut', label: 'カット' },
+  { type: 'dissolve', label: 'ディゾルブ' },
+  { type: 'fade_black', label: '黒フェード' },
+  { type: 'fade_white', label: '白フェード' },
+];
+const COLOR_CONTROLS = [
+  { key: 'brightness', label: '明るさ' },
+  { key: 'contrast', label: 'コントラスト' },
+  { key: 'saturation', label: '彩度' },
+  { key: 'temperature', label: '色温度（− 青み ／ ＋ 暖かみ）' },
+] as const;
+const NEUTRAL_COLOR = { brightness: 0, contrast: 0, saturation: 0, temperature: 0 };
 
 /** Length of a video in seconds, or null if the browser cannot read it */
 function readVideoDuration(url: string): Promise<number | null> {
@@ -43,6 +74,7 @@ interface MediaPanelProps {
   onUpdateProject: (update: ProjectUpdate) => void;
   selectedClipId: string | null;
   onSelectClip: (id: string) => void;
+  currentTime: number;
 }
 
 export const MediaPanel: React.FC<MediaPanelProps> = ({
@@ -50,15 +82,22 @@ export const MediaPanel: React.FC<MediaPanelProps> = ({
   onUpdateProject,
   selectedClipId,
   onSelectClip,
+  currentTime,
 }) => {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  // Set by the B-roll button: the files picked next are laid over the main track at the playhead
+  const addAsOverlayRef = useRef(false);
 
   const selectedClip = project.videoClips.find((c) => c.id === selectedClipId);
+  const vignette = project.vignette ?? DEFAULT_VIGNETTE;
 
   // Handle local file upload (images or videos)
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
+    const asOverlay = addAsOverlayRef.current;
+    addAsOverlayRef.current = false;
+    const overlayAt = currentTime;
 
     // startTime is first the offset from the end of the timeline; it becomes absolute when placed below
     const newClips: VideoClipItem[] = [];
@@ -73,8 +112,9 @@ export const MediaPanel: React.FC<MediaPanelProps> = ({
         return undefined;
       });
       const url = URL.createObjectURL(file);
-      // Videos use their real length (10s if it cannot be read); photos show for 8s
-      const clipDuration = isVideo ? (await readVideoDuration(url)) ?? 10 : 8;
+      // Videos use their real length (10s if it cannot be read); photos show for 8s (4s as B-roll)
+      const sourceDuration = isVideo ? await readVideoDuration(url) : null;
+      const clipDuration = isVideo ? sourceDuration ?? 10 : asOverlay ? OVERLAY_PHOTO_SEC : 8;
 
       newClips.push({
         id: `clip_${Date.now()}_${i}`,
@@ -86,6 +126,11 @@ export const MediaPanel: React.FC<MediaPanelProps> = ({
         duration: clipDuration,
         trimStart: 0,
         trimEnd: clipDuration,
+        ...(sourceDuration ? { sourceDuration } : {}),
+        // B-roll covers the picture but lets the main clip's voice carry on, and eases in and out
+        ...(asOverlay
+          ? { track: 'overlay' as const, volume: 0, transition: { type: 'dissolve' as const, duration: 0.5 } }
+          : {}),
         kenBurns: !isVideo
           ? {
               enabled: true,
@@ -101,15 +146,33 @@ export const MediaPanel: React.FC<MediaPanelProps> = ({
     }
     if (newClips.length === 0) return;
 
+    if (asOverlay) {
+      // One after another from the playhead, each cut short where an existing B-roll clip begins
+      onUpdateProject((prev) => {
+        let next = prev;
+        let at = overlayAt;
+        for (const clip of newClips) {
+          const span = openOverlaySpan(next, at, clip.duration);
+          if (!span) break;
+          next = { ...next, videoClips: [...next.videoClips, { ...clip, startTime: span.start, duration: span.duration }] };
+          at = span.start + span.duration;
+        }
+        if (next === prev) notify('再生位置の後ろに、Bロールを置ける空きがありません。', 'error');
+        return { ...next, updatedAt: new Date().toISOString() };
+      });
+      onSelectClip(newClips[0].id);
+      return;
+    }
+
     // Storing the files takes a moment, so place the clips after the end of the latest project
     onUpdateProject((prev) => {
-      const start = prev.videoClips.length > 0
-        ? Math.max(...prev.videoClips.map((c) => c.startTime + c.duration))
+      const mainClips = prev.videoClips.filter((c) => !isOverlayClip(c));
+      const start = mainClips.length > 0
+        ? Math.max(...mainClips.map((c) => c.startTime + c.duration))
         : 3; // after OP
       return {
         ...prev,
         videoClips: [...prev.videoClips, ...newClips.map((c) => ({ ...c, startTime: start + c.startTime }))],
-        duration: Math.max(prev.duration, start + offset + prev.branding.edDuration),
         updatedAt: new Date().toISOString(),
       };
     });
@@ -147,8 +210,9 @@ export const MediaPanel: React.FC<MediaPanelProps> = ({
 
     const dataUrl = offCanvas.toDataURL('image/jpeg', 0.9);
 
-    const curStartTime = project.videoClips.length > 0
-      ? Math.max(...project.videoClips.map((c) => c.startTime + c.duration))
+    const mainClips = project.videoClips.filter((c) => !isOverlayClip(c));
+    const curStartTime = mainClips.length > 0
+      ? Math.max(...mainClips.map((c) => c.startTime + c.duration))
       : 3;
 
     const newClip: VideoClipItem = {
@@ -172,7 +236,6 @@ export const MediaPanel: React.FC<MediaPanelProps> = ({
     onUpdateProject({
       ...project,
       videoClips: [...project.videoClips, newClip],
-      duration: Math.max(project.duration, curStartTime + 10 + project.branding.edDuration),
       updatedAt: new Date().toISOString(),
     });
     onSelectClip(newClip.id);
@@ -190,14 +253,53 @@ export const MediaPanel: React.FC<MediaPanelProps> = ({
     });
   };
 
-  const handleDeleteClip = (id: string) => {
-    const updated = project.videoClips.filter((c) => c.id !== id);
-    onUpdateProject({
-      ...project,
-      videoClips: updated,
-      updatedAt: new Date().toISOString(),
+  // What follows on the main track moves up, so no empty stretch is left behind
+  const handleDeleteClip = (id: string) => onUpdateProject(rippleDeleteClip(project, id));
+
+  const handleMoveInOrder = (id: string, direction: -1 | 1) => {
+    const moved = moveClipInOrder(project, id, direction);
+    if (moved) onUpdateProject(moved);
+  };
+
+  const handleToggleTrack = () => {
+    if (!selectedClip) return;
+    const target = isOverlayClip(selectedClip) ? 'main' : 'overlay';
+    const moved = moveClipToTrack(project, selectedClip.id, target);
+    if (!moved) {
+      notify(
+        target === 'overlay'
+          ? '同じ時間にほかのBロールがあるため移せません。Bロールの位置をずらしてください。'
+          : '同じ時間に本編のクリップがあるため戻せません。本編に空きを作ってください。',
+        'error'
+      );
+      return;
+    }
+    onUpdateProject(moved);
+  };
+
+  const handleSetTransition = (type: TransitionType | 'cut') => {
+    if (!selectedClip) return;
+    handleUpdateSelectedClip({
+      transition: type === 'cut' ? undefined : { type, duration: selectedClip.transition?.duration ?? DEFAULT_TRANSITION_SEC },
     });
   };
+
+  // The selected clip's transition on every clip of the main track (each one's way in from the clip before)
+  const handleApplyTransitionToAll = () => {
+    if (!selectedClip) return;
+    const transition = selectedClip.transition;
+    onUpdateProject({
+      ...project,
+      videoClips: project.videoClips.map((c) => (isOverlayClip(c) ? c : { ...c, transition })),
+      updatedAt: new Date().toISOString(),
+    });
+    notify(transition ? '本編のすべてのつなぎに同じ設定を使いました。' : '本編のすべてのつなぎをカットにしました。');
+  };
+
+  const selectedLimits = selectedClip ? clipEditLimits(project, selectedClip) : null;
+  const sortedClips = [...project.videoClips].sort(
+    (a, b) => Number(isOverlayClip(a)) - Number(isOverlayClip(b)) || a.startTime - b.startTime
+  );
 
   return (
     <div className="h-full flex flex-col p-4 overflow-y-auto space-y-5 text-sm text-[#E2E8F0]">
@@ -212,7 +314,10 @@ export const MediaPanel: React.FC<MediaPanelProps> = ({
         </div>
 
         <button
-          onClick={() => fileInputRef.current?.click()}
+          onClick={() => {
+            addAsOverlayRef.current = false;
+            fileInputRef.current?.click();
+          }}
           className="w-full py-3 border-2 border-dashed border-[#2f3b4c] hover:border-[#D4AF37] rounded-lg bg-[#141a24] hover:bg-[#192230] flex flex-col items-center justify-center space-y-1 transition-colors group cursor-pointer"
         >
           <Upload className="w-5 h-5 text-[#8A99AD] group-hover:text-[#D4AF37]" />
@@ -229,6 +334,17 @@ export const MediaPanel: React.FC<MediaPanelProps> = ({
           onChange={handleFileUpload}
           className="hidden"
         />
+        <button
+          onClick={() => {
+            addAsOverlayRef.current = true;
+            fileInputRef.current?.click();
+          }}
+          className="mt-1.5 w-full py-1.5 border border-[#3b3f73] hover:border-[#818CF8] rounded bg-[#15162a] hover:bg-[#1c1e38] flex items-center justify-center space-x-1.5 text-[11px] text-[#C7D2FE] transition-colors"
+          title="再生位置から、本編の上に重ねる映像（Bロール）として追加します。本編の声はそのまま聞こえます"
+        >
+          <Layers className="w-3.5 h-3.5" />
+          <span>Bロールとして再生位置に重ねる</span>
+        </button>
 
         {/* Quick Sample Sacred Photos */}
         <div className="mt-2.5">
@@ -269,8 +385,11 @@ export const MediaPanel: React.FC<MediaPanelProps> = ({
         </span>
 
         <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
-          {project.videoClips.map((clip, index) => {
+          {sortedClips.map((clip) => {
             const isSelected = clip.id === selectedClipId;
+            const overlay = isOverlayClip(clip);
+            const trackClips = sortedClips.filter((c) => isOverlayClip(c) === overlay);
+            const index = trackClips.indexOf(clip);
             return (
               <div
                 key={clip.id}
@@ -282,8 +401,10 @@ export const MediaPanel: React.FC<MediaPanelProps> = ({
                 }`}
               >
                 <div className="flex items-center space-x-2 truncate">
-                  <span className="text-[11px] text-[#718096] font-mono">{index + 1}.</span>
-                  {clip.type === 'video' ? (
+                  <span className="text-[11px] text-[#718096] font-mono">{overlay ? `B${index + 1}` : `${index + 1}.`}</span>
+                  {overlay ? (
+                    <Layers className="w-3.5 h-3.5 text-[#818CF8] shrink-0" />
+                  ) : clip.type === 'video' ? (
                     <Film className="w-3.5 h-3.5 text-[#60A5FA] shrink-0" />
                   ) : (
                     <ImageIcon className="w-3.5 h-3.5 text-[#34D399] shrink-0" />
@@ -293,15 +414,37 @@ export const MediaPanel: React.FC<MediaPanelProps> = ({
 
                 <div className="flex items-center space-x-2 shrink-0">
                   <span className="text-[10px] text-[#8A99AD] font-mono">
-                    {clip.startTime}s - {clip.startTime + clip.duration}s
+                    {clip.startTime}s - {Math.round((clip.startTime + clip.duration) * 100) / 100}s
                   </span>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleMoveInOrder(clip.id, -1);
+                    }}
+                    disabled={index === 0}
+                    className="p-0.5 hover:text-white text-gray-500 rounded disabled:opacity-30"
+                    title="ひとつ前と入れ替える"
+                  >
+                    <ArrowUp className="w-3 h-3" />
+                  </button>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleMoveInOrder(clip.id, 1);
+                    }}
+                    disabled={index === trackClips.length - 1}
+                    className="p-0.5 hover:text-white text-gray-500 rounded disabled:opacity-30"
+                    title="ひとつ後と入れ替える"
+                  >
+                    <ArrowDown className="w-3 h-3" />
+                  </button>
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
                       handleDeleteClip(clip.id);
                     }}
                     className="p-1 hover:text-red-400 text-gray-500 rounded"
-                    title="削除"
+                    title={overlay ? '削除' : '削除（後ろのクリップを詰める）'}
                   >
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>
@@ -310,6 +453,30 @@ export const MediaPanel: React.FC<MediaPanelProps> = ({
             );
           })}
         </div>
+      </div>
+
+      {/* Vignette over every photo and video */}
+      <div className="border border-[#263142] rounded-lg p-3 bg-[#131822] space-y-1.5 text-xs">
+        <div className="flex justify-between text-[#8A99AD]">
+          <label htmlFor="vignette-strength">周辺減光（画面の四隅を暗くする）</label>
+          <span className="font-mono text-[#D4AF37]">{vignette > 0 ? `${Math.round(vignette * 100)}%` : 'オフ'}</span>
+        </div>
+        <input
+          id="vignette-strength"
+          type="range"
+          min="0"
+          max="0.8"
+          step="0.05"
+          value={vignette}
+          onChange={(e) => {
+            const value = parseFloat(e.target.value);
+            onUpdateProject((prev) => ({ ...prev, vignette: value, updatedAt: new Date().toISOString() }));
+          }}
+          className="w-full h-1 bg-[#253245] accent-[#D4AF37]"
+        />
+        <p className="text-[10px] text-[#64748B] leading-relaxed">
+          すべての写真・動画にかかります。素材の色をそのまま見せたいときは 0〜30% 程度に弱めてください。
+        </p>
       </div>
 
       {/* Selected Clip Inspector & Ken Burns Settings */}
@@ -330,9 +497,12 @@ export const MediaPanel: React.FC<MediaPanelProps> = ({
                 type="number"
                 step="0.5"
                 value={selectedClip.startTime}
-                onChange={(e) =>
-                  handleUpdateSelectedClip({ startTime: Math.max(0, parseFloat(e.target.value) || 0) })
-                }
+                onChange={(e) => {
+                  // Between the neighbouring clips on the same track
+                  const wanted = Math.max(0, parseFloat(e.target.value) || 0);
+                  const latest = selectedLimits!.latestEnd - selectedClip.duration;
+                  handleUpdateSelectedClip({ startTime: Math.max(selectedLimits!.earliestStart, Math.min(latest, wanted)) });
+                }}
                 className="w-full bg-[#1c2433] border border-[#2b3749] rounded px-2 py-1 text-white font-mono"
               />
             </div>
@@ -342,12 +512,154 @@ export const MediaPanel: React.FC<MediaPanelProps> = ({
                 type="number"
                 step="0.5"
                 value={selectedClip.duration}
-                onChange={(e) =>
-                  handleUpdateSelectedClip({ duration: Math.max(1, parseFloat(e.target.value) || 1) })
-                }
+                onChange={(e) => {
+                  // Up to the next clip on the same track, and (for a video) the end of its source
+                  const wanted = Math.max(1, parseFloat(e.target.value) || 1);
+                  const longest = selectedLimits!.latestTail - selectedClip.startTime;
+                  handleUpdateSelectedClip({ duration: Math.round(Math.min(longest, wanted) * 100) / 100 });
+                }}
                 className="w-full bg-[#1c2433] border border-[#2b3749] rounded px-2 py-1 text-white font-mono"
               />
             </div>
+          </div>
+
+          {/* Which track: the main sequence or B-roll laid over it */}
+          <div className="pt-2 border-t border-[#212937] flex items-center justify-between text-xs">
+            <span className="text-[#8A99AD]">
+              {isOverlayClip(selectedClip) ? 'Bロール（本編の上に重ねる）' : '本編'}
+            </span>
+            <button
+              onClick={handleToggleTrack}
+              className="px-2 py-0.5 rounded border border-[#3b3f73] bg-[#15162a] hover:bg-[#1c1e38] text-[11px] text-[#C7D2FE]"
+            >
+              {isOverlayClip(selectedClip) ? '本編に戻す' : 'Bロールに移す'}
+            </button>
+          </div>
+
+          {/* How the clip begins */}
+          <div className="pt-2 border-t border-[#212937] text-xs space-y-1.5">
+            <span className="text-[#8A99AD] block">
+              {isOverlayClip(selectedClip) ? '出入りのつなぎ' : '前のクリップからのつなぎ'}
+            </span>
+            <div className="grid grid-cols-4 gap-1">
+              {TRANSITION_CHOICES.filter((c) => !isOverlayClip(selectedClip) || c.type === 'cut' || c.type === 'dissolve').map(
+                (choice) => {
+                  const current = selectedClip.transition?.type ?? 'cut';
+                  return (
+                    <button
+                      key={choice.type}
+                      onClick={() => handleSetTransition(choice.type)}
+                      className={`py-1 rounded border text-[10px] transition-colors ${
+                        current === choice.type
+                          ? 'bg-[#292015] border-[#D4AF37] text-[#F7E7B4] font-semibold'
+                          : 'bg-[#121722] border-[#222c3d] text-gray-300 hover:bg-[#1a2333]'
+                      }`}
+                    >
+                      {choice.label}
+                    </button>
+                  );
+                }
+              )}
+            </div>
+            {selectedClip.transition && (
+              <div>
+                <div className="flex justify-between text-[#8A99AD]">
+                  <label htmlFor="transition-duration">長さ</label>
+                  <span className="font-mono text-[#D4AF37]">{selectedClip.transition.duration.toFixed(1)}秒</span>
+                </div>
+                <input
+                  id="transition-duration"
+                  type="range"
+                  min="0.2"
+                  max="2"
+                  step="0.1"
+                  value={selectedClip.transition.duration}
+                  onChange={(e) =>
+                    handleUpdateSelectedClip({
+                      transition: { ...selectedClip.transition!, duration: parseFloat(e.target.value) },
+                    })
+                  }
+                  className="w-full h-1 bg-[#253245] accent-[#D4AF37]"
+                />
+              </div>
+            )}
+            {!isOverlayClip(selectedClip) && (
+              <button
+                onClick={handleApplyTransitionToAll}
+                className="w-full py-1 rounded border border-[#2b3749] bg-[#121722] hover:bg-[#1a2333] text-[10px] text-gray-300"
+              >
+                このつなぎを本編のすべてのクリップに使う
+              </button>
+            )}
+            <p className="text-[10px] text-[#64748B] leading-relaxed">
+              {isOverlayClip(selectedClip)
+                ? 'ディゾルブにすると、Bロールが本編からふわっと現れ、ふわっと消えます。'
+                : '切り替わりの前後半分ずつにかかります。前にクリップがないときは、黒（白）からのフェードインになります。'}
+            </p>
+          </div>
+
+          {/* Speed */}
+          {selectedClip.type === 'video' && (
+            <div className="pt-2 border-t border-[#212937] text-xs space-y-1">
+              <div className="flex justify-between items-center text-[#8A99AD]">
+                <label htmlFor="clip-speed">再生速度</label>
+                <select
+                  id="clip-speed"
+                  value={clipSpeed(selectedClip)}
+                  onChange={(e) => onUpdateProject(setClipSpeed(project, selectedClip.id, parseFloat(e.target.value)))}
+                  className="bg-[#1c2433] border border-[#2b3749] rounded px-2 py-0.5 text-white font-mono text-xs"
+                >
+                  {SPEEDS.map((speed) => (
+                    <option key={speed} value={speed}>
+                      {speed}x{speed < 1 ? '（スロー）' : speed > 1 ? '（早送り）' : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <p className="text-[10px] text-[#64748B] leading-relaxed">
+                映る範囲はそのままで、長さが変わります（本編では後ろのクリップも一緒にずれます）。元の音は高さも変わるので、気になるときは下の音量を0%にしてください。
+              </p>
+            </div>
+          )}
+
+          {/* Colour correction */}
+          <div className="pt-2 border-t border-[#212937] text-xs space-y-1.5">
+            <div className="flex items-center justify-between">
+              <span className="text-[#8A99AD]">色補正</span>
+              {selectedClip.color && (
+                <button
+                  onClick={() => handleUpdateSelectedClip({ color: undefined })}
+                  className="text-[10px] text-gray-400 hover:text-red-300"
+                >
+                  元に戻す
+                </button>
+              )}
+            </div>
+            {COLOR_CONTROLS.map(({ key, label }) => {
+              const value = selectedClip.color?.[key] ?? 0;
+              return (
+                <div key={key}>
+                  <div className="flex justify-between text-[11px] text-[#8A99AD]">
+                    <label htmlFor={`color-${key}`}>{label}</label>
+                    <span className="font-mono text-[#D4AF37]">{value > 0 ? `+${value}` : value}</span>
+                  </div>
+                  <input
+                    id={`color-${key}`}
+                    type="range"
+                    min="-50"
+                    max="50"
+                    step="1"
+                    value={value}
+                    onChange={(e) =>
+                      handleUpdateSelectedClip({
+                        color: { ...NEUTRAL_COLOR, ...selectedClip.color, [key]: parseInt(e.target.value, 10) },
+                      })
+                    }
+                    className="w-full h-1 bg-[#253245] accent-[#D4AF37]"
+                  />
+                </div>
+              );
+            })}
           </div>
 
           {/* Original sound recorded with the video */}

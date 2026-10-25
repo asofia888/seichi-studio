@@ -4,6 +4,7 @@
  * microphone recording, a real output level meter, and loudness measurement (LUFS).
  */
 import { AudioTrackItem, ProjectData, VideoClipItem } from '../types';
+import { clipSpeed } from './composition';
 
 /**
  * Timeline spans where someone is heard speaking: narrations with a sound file, and talking
@@ -24,15 +25,57 @@ export function getSpeechSpans(
     for (const clip of videoClips) {
       if (clip.type !== 'video' || !clip.dataUrl || (clip.volume ?? 1) === 0) continue;
       const clipEnd = clip.startTime + clip.duration;
+      const speed = clipSpeed(clip);
       // speechRanges are in source-file seconds; map them onto the timeline and keep the part inside the clip
       for (const [s, e] of clip.speechRanges || []) {
-        const start = Math.max(clip.startTime, clip.startTime + (s - clip.trimStart));
-        const end = Math.min(clipEnd, clip.startTime + (e - clip.trimStart));
+        const start = Math.max(clip.startTime, clip.startTime + (s - clip.trimStart) / speed);
+        const end = Math.min(clipEnd, clip.startTime + (e - clip.trimStart) / speed);
         if (end > start) spans.push([start, end]);
       }
     }
   }
   return spans;
+}
+
+// How far and how quickly the BGM is turned down under speech, unless the track says otherwise
+export const DEFAULT_DUCK_VOLUME = 0.22;
+export const DEFAULT_DUCK_RAMP_SEC = 0.35;
+
+/** Merge speech spans whose gap is too short for the BGM to come back up in between */
+export function mergeSpans(intervals: [number, number][], minGap: number): [number, number][] {
+  const sorted = [...intervals].sort((a, b) => a[0] - b[0]);
+  const merged: [number, number][] = [];
+  for (const [s, e] of sorted) {
+    const last = merged[merged.length - 1];
+    if (last && s - last[1] < minGap) {
+      last[1] = Math.max(last[1], e);
+    } else {
+      merged.push([s, e]);
+    }
+  }
+  return merged;
+}
+
+/**
+ * How much the BGM is turned down at `t` under the (merged) speech spans: 1 is not at all,
+ * `duckLevel` is fully. It ramps down over `rampSec` before each span and back up over `rampSec`
+ * after it, the same curve the export writes, so the preview sounds like the finished video.
+ */
+export function duckGainAt(spans: [number, number][], t: number, duckLevel: number, rampSec: number): number {
+  let gain = 1;
+  for (const [s, e] of spans) {
+    const downFrom = Math.max(0, s - rampSec);
+    let g = 1;
+    if (t >= s && t <= e) {
+      g = duckLevel;
+    } else if (t >= downFrom && t < s) {
+      g = 1 - (1 - duckLevel) * ((t - downFrom) / (s - downFrom));
+    } else if (t > e && t < e + rampSec) {
+      g = duckLevel + (1 - duckLevel) * ((t - e) / rampSec);
+    }
+    gain = Math.min(gain, g);
+  }
+  return gain;
 }
 
 /** Whether someone is heard speaking at `time` (a narration, or talking in a video clip) */
@@ -45,18 +88,27 @@ export function isNarrationAudibleAt(
   return getSpeechSpans(audioTracks, videoClips, mutedTracks).some(([s, e]) => time >= s && time < e);
 }
 
-/**
- * Integrated loudness of a sound file per ITU-R BS.1770 / EBU R128: K-weighting, 400 ms blocks
- * with 75% overlap, absolute gate at -70 LUFS and relative gate at -10 LU.
- */
+// The rate the standard's K-weighting coefficients are published for
+const LOUDNESS_SAMPLE_RATE = 48000;
+
+/** Integrated loudness of a sound file (see measureBufferLoudness) */
 async function measureIntegratedLoudness(url: string): Promise<number | null> {
   const data = await (await fetch(url)).arrayBuffer();
-  // decodeAudioData resamples to the context's rate, so the audio is always 48 kHz here,
-  // which is the rate the standard's K-weighting coefficients are published for
-  const SAMPLE_RATE = 48000;
-  const buffer = await new OfflineAudioContext(1, 1, SAMPLE_RATE).decodeAudioData(data);
+  // decodeAudioData resamples to the context's rate, so the audio is always 48 kHz here
+  const buffer = await new OfflineAudioContext(1, 1, LOUDNESS_SAMPLE_RATE).decodeAudioData(data);
+  return measureBufferLoudness(buffer);
+}
 
-  const ctx = new OfflineAudioContext(buffer.numberOfChannels, buffer.length, SAMPLE_RATE);
+/**
+ * Integrated loudness in LUFS per ITU-R BS.1770 / EBU R128: K-weighting, 400 ms blocks with
+ * 75% overlap, absolute gate at -70 LUFS and relative gate at -10 LU. `buffer` must be 48 kHz.
+ * Null when it is silent (or shorter than 0.4 s).
+ */
+export async function measureBufferLoudness(buffer: AudioBuffer): Promise<number | null> {
+  if (buffer.sampleRate !== LOUDNESS_SAMPLE_RATE) {
+    throw new Error(`Loudness can only be measured at ${LOUDNESS_SAMPLE_RATE} Hz, not ${buffer.sampleRate} Hz`);
+  }
+  const ctx = new OfflineAudioContext(buffer.numberOfChannels, buffer.length, LOUDNESS_SAMPLE_RATE);
   const source = ctx.createBufferSource();
   source.buffer = buffer;
   // K-weighting, BS.1770-4 Table 1 (pre-filter) and Table 2 (RLB high-pass) at 48 kHz
@@ -153,8 +205,8 @@ class AudioEngine {
   ) {
     this.init();
 
-    // Speech actually being heard right now (same rule as the export): BGM ducks only under audible speech
-    const isNarrationActive = isNarrationAudibleAt(audioTracks, videoClips, currentTime, mutedTracks);
+    // Speech actually being heard (same rule as the export): BGM ducks only under audible speech
+    const speechSpans = getSpeechSpans(audioTracks, videoClips, mutedTracks);
 
     // Manage each track's HTMLAudioElement
     for (const track of audioTracks) {
@@ -196,8 +248,11 @@ class AudioEngine {
 
         // Set volume with ducking and fade consideration
         if (track.type === 'bgm') {
-          const isDucking = isNarrationActive && track.autoDucking?.enabled !== false;
-          const duckVal = isDucking ? (track.autoDucking?.duckVolume ?? 0.22) : 1.0;
+          const ramp = track.autoDucking?.fadeSec ?? DEFAULT_DUCK_RAMP_SEC;
+          const duckVal =
+            track.autoDucking?.enabled === false
+              ? 1
+              : duckGainAt(mergeSpans(speechSpans, ramp * 2), currentTime, track.autoDucking?.duckVolume ?? DEFAULT_DUCK_VOLUME, ramp);
           el.volume = Math.max(0, Math.min(1, track.volume * duckVal * fadeMultiplier));
         } else {
           el.volume = Math.max(0, Math.min(1, track.volume * fadeMultiplier));
@@ -217,6 +272,24 @@ class AudioEngine {
         this.audioElements.delete(id);
       }
     }
+  }
+
+  /**
+   * The clock the speakers play by (the audio context's, smoothed between its updates), so the
+   * playhead keeps pace with the sound instead of drifting away from it; the page's clock while
+   * the audio context is not running (e.g. before the first click). Compare readings only while
+   * `isAudioClock` stays the same.
+   */
+  public now(): { seconds: number; isAudioClock: boolean } {
+    const ctx = this.ctx;
+    if (ctx && ctx.state === 'running') {
+      const stamp = ctx.getOutputTimestamp?.();
+      if (stamp?.contextTime !== undefined && stamp.performanceTime) {
+        return { seconds: stamp.contextTime + (performance.now() - stamp.performanceTime) / 1000, isAudioClock: true };
+      }
+      return { seconds: ctx.currentTime, isAudioClock: true };
+    }
+    return { seconds: performance.now() / 1000, isAudioClock: false };
   }
 
   public pauseAll() {

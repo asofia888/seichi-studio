@@ -3,6 +3,7 @@ import { ProjectData, GlossaryItem, MultilingualSubtitleItem, SupportedLanguage 
 import type { ProjectUpdate } from '../../services/projectHistory';
 import {
   translateWithClaude,
+  translateLinesWithClaude,
   CLAUDE_MODELS,
   ClaudeModelId,
   loadClaudeSettings,
@@ -113,24 +114,24 @@ export const TranslationPanel: React.FC<TranslationPanelProps> = ({
     setIsTranslatingAll(true);
     setStatusMessage('Claude APIで英語に翻訳中...');
 
-    const lines = project.subtitles.map((sub, index) => ({ sub, index })).filter(({ sub }) => sub.text.ja);
-    const results: { id: string; ja: string; en: string }[] = [];
+    // All lines go to Claude together (in playing order), so terms stay consistent from line to line
+    const lines = [...project.subtitles]
+      .sort((a, b) => a.startTime - b.startTime)
+      .filter((sub) => sub.text.ja.trim())
+      .map((sub) => ({ id: sub.id, ja: sub.text.ja }));
+    let translated = new Map<string, string>();
     try {
-      for (const { sub, index } of lines) {
-        setTranslatingIndex(index);
-        const en = await translateWithClaude(sub.text.ja, savedApiKey, model, project.glossary);
-        results.push({ id: sub.id, ja: sub.text.ja, en });
-      }
-
+      translated = await translateLinesWithClaude(lines, savedApiKey, model, project.glossary, (done) =>
+        setStatusMessage(`Claude APIで英語に翻訳中... (${done} / ${lines.length}行)`)
+      );
       setStatusMessage('すべての解説テロップの英語翻訳が完了しました！');
       setTimeout(() => setStatusMessage(null), 4000);
     } catch (e: any) {
       setStatusMessage(null);
-      notify(`${results.length}行を翻訳したところでエラーが発生しました（翻訳済みの行は反映されます）:\n${e.message}`, 'error');
+      notify(`翻訳中にエラーが発生しました:\n${e.message}`, 'error');
     } finally {
-      // Keep the lines that finished, even if a later line failed
-      if (results.length > 0) {
-        applyTranslations(results);
+      if (translated.size > 0) {
+        applyTranslations(lines.flatMap((l) => (translated.has(l.id) ? [{ ...l, en: translated.get(l.id)! }] : [])));
       }
       setIsTranslatingAll(false);
       setTranslatingIndex(null);

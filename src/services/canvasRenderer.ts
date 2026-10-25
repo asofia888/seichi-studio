@@ -12,11 +12,31 @@ import {
   SupportedLanguage,
 } from '../types';
 import { audioEngine } from './audioEngine';
+import {
+  clipSoundSpan,
+  clipSpeed,
+  colorAdjustment,
+  pictureAt,
+  pictureLayers,
+  PictureLayer,
+  soundEnvelopeAt,
+} from './composition';
+
+export interface DecodedFrame {
+  image: CanvasImageSource;
+  width: number;
+  height: number;
+}
 
 export interface ExportRenderOptions {
-  /** Frame decoded from the active video clip for this timestamp (null if none could be decoded) */
-  videoFrame: { image: CanvasImageSource; width: number; height: number } | null;
+  /** Frame decoded for this timestamp, per video clip on screen (null if it could not be decoded) */
+  videoFrames: Map<string, DecodedFrame | null>;
+  /** Output pixels per layout pixel: 2 renders the 1920x1080 layout as 3840x2160 (default 1) */
+  pixelScale?: number;
 }
+
+/** How dark the vignette makes the edges of the picture when the project does not say (0 to 1) */
+export const DEFAULT_VIGNETTE = 0.65;
 
 // Japanese characters that must not begin a line (kinsoku): they stay at the end of the previous line
 const NO_LINE_START = '、。，．,.・：；？！!?ー～」』）】〕〉》ゝゞぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮヵヶ';
@@ -134,19 +154,6 @@ export class CanvasRenderer {
   public onVideoFrameReady: (() => void) | null = null;
 
   /**
-   * The media clip shown at this time: undefined during the OP/ED cards,
-   * when nothing is placed there, or when the video track is hidden.
-   */
-  public getActiveClip(project: ProjectData, currentTime: number): VideoClipItem | undefined {
-    if (project.branding.opDuration > 0 && currentTime < project.branding.opDuration) return undefined;
-    if (project.branding.edDuration > 0 && currentTime >= project.duration - project.branding.edDuration) return undefined;
-    if (project.mutedTracks?.video === true) return undefined;
-    return project.videoClips.find(
-      (c) => currentTime >= c.startTime && currentTime < c.startTime + c.duration
-    );
-  }
-
-  /**
    * Main render method for a specific frame.
    * Without `exportOptions` it renders the live preview and drives the <video> elements;
    * with them it renders an export frame and leaves the preview's <video> elements untouched.
@@ -163,17 +170,21 @@ export class CanvasRenderer {
     const W = isLandscape ? 1920 : 1080;
     const H = isLandscape ? 1080 : 1920;
 
-    // Ensure canvas dimensions match target
-    if (ctx.canvas.width !== W || ctx.canvas.height !== H) {
-      ctx.canvas.width = W;
-      ctx.canvas.height = H;
+    // Ensure canvas dimensions match target; everything is laid out in W x H and scaled to it
+    const pixelScale = exportOptions?.pixelScale ?? 1;
+    if (ctx.canvas.width !== W * pixelScale || ctx.canvas.height !== H * pixelScale) {
+      ctx.canvas.width = W * pixelScale;
+      ctx.canvas.height = H * pixelScale;
     }
+    ctx.setTransform(pixelScale, 0, 0, pixelScale, 0, 0);
 
-    const activeClip = this.getActiveClip(project, currentTime);
+    const picture = pictureAt(project, currentTime);
+    const layers = pictureLayers(picture);
     if (!exportOptions) {
-      // Only the clip on screen may play; any other video (e.g. the previous clip) must stop, or its sound keeps going
+      // Only the clips on screen may play; any other video (e.g. the previous clip) must stop, or its sound keeps going
+      const onScreen = new Set(layers.map((l) => l.clip.id));
       for (const [id, vid] of this.videoCache) {
-        if (id !== activeClip?.id && !vid.paused) vid.pause();
+        if (!onScreen.has(id) && !vid.paused) vid.pause();
       }
     }
 
@@ -194,18 +205,24 @@ export class CanvasRenderer {
       return;
     }
 
-    // 4. Render Active Media Clip (Video or Photo with Ken Burns)
-    if (activeClip) {
-      this.renderClip(ctx, activeClip, currentTime, W, H, isPlaying, exportOptions);
-    } else {
-      // Elegant placeholder when no media is assigned or video is hidden
-      this.renderAtmosphericPlaceholder(ctx, currentTime, W, H, isLandscape);
+    // 4. The clips on screen (two while one dissolves into the next, then the B-roll) with the
+    // vignette over them, and the dip of a fade transition over everything.
+    // Where no clip is placed the frame stays dark, in the preview exactly as in the export.
+    for (const layer of layers) {
+      this.renderLayer(ctx, project, layer, currentTime, W, H, isPlaying, exportOptions);
+    }
+    if (layers.length > 0) {
+      this.renderVignette(ctx, W, H, project.vignette ?? DEFAULT_VIGNETTE);
+    }
+    if (picture.dip && picture.dip.alpha > 0) {
+      ctx.save();
+      ctx.globalAlpha = Math.min(1, picture.dip.alpha);
+      ctx.fillStyle = picture.dip.color === 'white' ? '#FFFFFF' : '#000000';
+      ctx.fillRect(0, 0, W, H);
+      ctx.restore();
     }
 
-    // 5. Render Subtle Vignette & Sacred Mist Overlay
-    this.renderSacredAtmosphere(ctx, W, H);
-
-    // 6. Render Subtitles / Shrine Cards (if not hidden)
+    // 5. Render Subtitles / Shrine Cards (if not hidden)
     const isSubtitlesMuted = project.mutedTracks?.subtitles === true;
     if (!isSubtitlesMuted) {
       const activeSubs = project.subtitles.filter(
@@ -222,7 +239,7 @@ export class CanvasRenderer {
         }
       }
 
-      // 7. Render Access Guide Card (simple pin map or uploaded map image + info)
+      // 6. Render Access Guide Card (simple pin map or uploaded map image + info)
       const activeAccessCard = project.accessCards.find(
         (a) => currentTime >= a.startTime && currentTime < a.startTime + a.duration
       );
@@ -232,20 +249,94 @@ export class CanvasRenderer {
     }
   }
 
+  // Colour-corrected clips are drawn here first, so their tint touches only their own picture
+  private scratchCanvas: HTMLCanvasElement | null = null;
+
   /**
-   * Render Media Clip (Video or Photo with Ken Burns effect)
+   * Draw one clip at its opacity, with its colour correction
    */
-  private renderClip(
+  private renderLayer(
     ctx: CanvasRenderingContext2D,
-    clip: VideoClipItem,
+    project: ProjectData,
+    layer: PictureLayer,
     currentTime: number,
     W: number,
     H: number,
     isPlaying: boolean,
     exportOptions?: ExportRenderOptions
   ) {
-    const elapsed = currentTime - clip.startTime;
-    const progress = Math.min(1, Math.max(0, elapsed / (clip.duration || 1)));
+    if (!exportOptions) this.syncPreviewVideo(project, layer, currentTime, isPlaying);
+
+    const { filter, tint } = colorAdjustment(layer.clip);
+    if (!filter && !tint) {
+      ctx.save();
+      ctx.globalAlpha = layer.alpha;
+      this.renderClip(ctx, layer, W, H, exportOptions);
+      ctx.restore();
+      return;
+    }
+
+    if (!this.scratchCanvas) this.scratchCanvas = document.createElement('canvas');
+    const scratch = this.scratchCanvas;
+    if (scratch.width !== ctx.canvas.width || scratch.height !== ctx.canvas.height) {
+      scratch.width = ctx.canvas.width;
+      scratch.height = ctx.canvas.height;
+    }
+    const sctx = scratch.getContext('2d')!;
+    sctx.setTransform(1, 0, 0, 1, 0, 0);
+    sctx.clearRect(0, 0, scratch.width, scratch.height);
+    sctx.setTransform(ctx.getTransform());
+    sctx.filter = filter ?? 'none';
+    this.renderClip(sctx, layer, W, H, exportOptions);
+    sctx.filter = 'none';
+    if (tint) {
+      sctx.globalCompositeOperation = 'multiply';
+      sctx.fillStyle = tint;
+      sctx.fillRect(0, 0, W, H);
+      sctx.globalCompositeOperation = 'source-over';
+    }
+
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalAlpha = layer.alpha;
+    ctx.drawImage(scratch, 0, 0);
+    ctx.restore();
+  }
+
+  /** Keep a preview <video> playing (or paused) at the moment, speed and volume the layer calls for */
+  private syncPreviewVideo(project: ProjectData, layer: PictureLayer, currentTime: number, isPlaying: boolean) {
+    const clip = layer.clip;
+    if (clip.type !== 'video' || !clip.dataUrl) return;
+    const vid = this.getVideoElement(clip.id, clip.dataUrl);
+
+    const speed = clipSpeed(clip);
+    if (vid.playbackRate !== speed) vid.playbackRate = speed;
+    // The export changes the pitch along with the speed, so the preview does too
+    vid.preservesPitch = false;
+    const envelope = soundEnvelopeAt(clipSoundSpan(project, clip), currentTime);
+    vid.volume = Math.max(0, Math.min(1, (clip.volume ?? 1) * envelope));
+
+    if (isPlaying && vid.paused && vid.readyState >= 2) {
+      vid.play().catch(() => {});
+    } else if (!isPlaying && !vid.paused) {
+      vid.pause();
+    }
+    if (Math.abs(vid.currentTime - layer.sourceTime) > 0.3) {
+      vid.currentTime = layer.sourceTime;
+    }
+  }
+
+  /**
+   * Render Media Clip (Video or Photo with Ken Burns effect)
+   */
+  private renderClip(
+    ctx: CanvasRenderingContext2D,
+    layer: PictureLayer,
+    W: number,
+    H: number,
+    exportOptions?: ExportRenderOptions
+  ) {
+    const clip = layer.clip;
 
     if (clip.type === 'image' && clip.dataUrl) {
       const img = this.getLoadedImage(clip.dataUrl);
@@ -256,7 +347,7 @@ export class CanvasRenderer {
         // Ken Burns effect calculation (switched off: the photo stays still)
         const kb = clip.kenBurns || { enabled: true, scaleStart: 1.0, scaleEnd: 1.15, panX: 3, panY: 2 };
         const motion = kb.enabled === false ? null : kb;
-        const ease = this.easeInOutQuad(progress);
+        const ease = this.easeInOutQuad(layer.progress);
         const scale = motion ? motion.scaleStart + (motion.scaleEnd - motion.scaleStart) * ease : 1;
         const panX = motion ? ((motion.panX * ease) / 100) * W : 0;
         const panY = motion ? ((motion.panY * ease) / 100) * H : 0;
@@ -286,25 +377,12 @@ export class CanvasRenderer {
       }
     } else if (clip.type === 'video' && exportOptions) {
       // Export: draw the frame decoded for exactly this timestamp
-      const frame = exportOptions.videoFrame;
+      const frame = exportOptions.videoFrames.get(clip.id);
       if (frame) {
         this.drawCover(ctx, frame.image, frame.width, frame.height, W, H);
       }
     } else if (clip.type === 'video' && clip.dataUrl) {
       const vid = this.getVideoElement(clip.id, clip.dataUrl);
-      const targetTime = clip.trimStart + elapsed;
-      vid.volume = Math.max(0, Math.min(1, clip.volume ?? 1));
-
-      if (isPlaying && vid.paused && vid.readyState >= 2) {
-        vid.play().catch(() => {});
-      } else if (!isPlaying && !vid.paused) {
-        vid.pause();
-      }
-
-      if (Math.abs(vid.currentTime - targetTime) > 0.3) {
-        vid.currentTime = targetTime;
-      }
-
       if (vid.readyState >= 2) {
         this.drawCover(ctx, vid, vid.videoWidth || W, vid.videoHeight || H, W, H);
       }
@@ -332,66 +410,13 @@ export class CanvasRenderer {
   }
 
   /**
-   * Atmospheric placeholder when no media is present
+   * Vignette: darkens the edges of the picture by up to `strength` (0 = none)
    */
-  private renderAtmosphericPlaceholder(
-    ctx: CanvasRenderingContext2D,
-    currentTime: number,
-    W: number,
-    H: number,
-    isLandscape: boolean
-  ) {
-    const grad = ctx.createLinearGradient(0, 0, 0, H);
-    grad.addColorStop(0, '#0d131a');
-    grad.addColorStop(0.5, '#161c22');
-    grad.addColorStop(1, '#0a0d10');
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, W, H);
-
-    // Subtle Torii silhouette motif in background
-    ctx.save();
-    ctx.strokeStyle = 'rgba(212, 175, 55, 0.15)';
-    ctx.lineWidth = isLandscape ? 8 : 6;
-    const cx = W / 2;
-    const cy = H / 2 - (isLandscape ? 60 : 100);
-    const tw = isLandscape ? 380 : 280;
-
-    // Torii top bar (kasagi)
-    ctx.beginPath();
-    ctx.moveTo(cx - tw / 2 - 40, cy - 80);
-    ctx.bezierCurveTo(cx - tw / 4, cy - 90, cx + tw / 4, cy - 90, cx + tw / 2 + 40, cy - 80);
-    ctx.stroke();
-
-    // Torii second bar (shimaki)
-    ctx.beginPath();
-    ctx.moveTo(cx - tw / 2, cy - 40);
-    ctx.lineTo(cx + tw / 2, cy - 40);
-    ctx.stroke();
-
-    // Torii pillars
-    ctx.beginPath();
-    ctx.moveTo(cx - tw / 3, cy - 40);
-    ctx.lineTo(cx - tw / 3 - 10, cy + 160);
-    ctx.moveTo(cx + tw / 3, cy - 40);
-    ctx.lineTo(cx + tw / 3 + 10, cy + 160);
-    ctx.stroke();
-
-    ctx.restore();
-
-    // Quiet message
-    ctx.fillStyle = 'rgba(247, 246, 242, 0.4)';
-    ctx.font = `italic ${isLandscape ? 28 : 24}px 'Shippori Mincho', 'Noto Serif JP', serif`;
-    ctx.textAlign = 'center';
-    ctx.fillText('神域の静寂 - Sanctuary Stillness', W / 2, H / 2 + (isLandscape ? 120 : 140));
-  }
-
-  /**
-   * Subtle mist & vignette overlay
-   */
-  private renderSacredAtmosphere(ctx: CanvasRenderingContext2D, W: number, H: number) {
+  private renderVignette(ctx: CanvasRenderingContext2D, W: number, H: number, strength: number) {
+    if (strength <= 0) return;
     const vig = ctx.createRadialGradient(W / 2, H / 2, H * 0.4, W / 2, H / 2, H * 0.85);
     vig.addColorStop(0, 'rgba(0,0,0,0)');
-    vig.addColorStop(1, 'rgba(0,0,0,0.65)');
+    vig.addColorStop(1, `rgba(0,0,0,${Math.min(1, strength)})`);
     ctx.fillStyle = vig;
     ctx.fillRect(0, 0, W, H);
   }

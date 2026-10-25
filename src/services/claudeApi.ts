@@ -48,6 +48,41 @@ const TRANSLATION_FORMAT = betaJSONSchemaOutputFormat({
   additionalProperties: false,
 });
 
+/** System prompt for translating shrine captions, with the glossary terms to keep consistent */
+function translationSystem(glossary: GlossaryItem[]): Anthropic.Beta.BetaTextBlockParam[] {
+  const glossaryPrompt = glossary.length > 0
+    ? `\nUse the following official Sanctuary & Shinto terminology glossary for consistent translation:
+${glossary.map(g => `- Japanese: "${g.japanese}" -> English: "${g.english}"`).join('\n')}`
+    : '';
+
+  const text = `You are an expert translator specializing in traditional Japanese Shinto shrines, sacred sanctuaries, rituals, and Buddhist heritage.
+Translate the provided Japanese commentary or sanctuary information into English.
+Tone requirements:
+- Serene, reverent, solemn, elegant, and atmospheric.
+- Keep the sacred aura of the shrine.
+- Preserve traditional honorifics and standardized Romanization according to the glossary.
+${glossaryPrompt}`;
+  // The same for every request of a project, so it is cached (when long enough to qualify)
+  return [{ type: 'text', text, cache_control: { type: 'ephemeral' } }];
+}
+
+function requireApiKey(apiKey: string) {
+  if (!apiKey.trim()) {
+    throw new Error('Claude APIキーが未設定です。「翻訳」タブの Claude API 設定でキーを保存してください。');
+  }
+}
+
+// Haiku 4.5 rejects `effort` and has no server-side fallback; the 5.5 models accept both
+const requestExtras = (model: ClaudeModelId, effort: 'low' | 'medium') =>
+  model === 'claude-haiku-4-5'
+    ? {}
+    : {
+        // If a safety classifier declines, the API retries on Anthropic's recommended fallback model
+        betas: ['server-side-fallback-2026-07-01'],
+        fallbacks: 'default' as const,
+        effort,
+      };
+
 export async function translateWithClaude(
   textToTranslate: string,
   apiKey: string,
@@ -57,44 +92,24 @@ export async function translateWithClaude(
   if (!textToTranslate.trim()) {
     return '';
   }
-  if (!apiKey.trim()) {
-    throw new Error('Claude APIキーが未設定です。「翻訳」タブの Claude API 設定でキーを保存してください。');
-  }
-
-  // Format glossary for prompt
-  const glossaryPrompt = glossary.length > 0
-    ? `\nUse the following official Sanctuary & Shinto terminology glossary for consistent translation:
-${glossary.map(g => `- Japanese: "${g.japanese}" -> English: "${g.english}"`).join('\n')}`
-    : '';
-
-  const systemPrompt = `You are an expert translator specializing in traditional Japanese Shinto shrines, sacred sanctuaries, rituals, and Buddhist heritage.
-Translate the provided Japanese commentary or sanctuary information into English.
-Tone requirements:
-- Serene, reverent, solemn, elegant, and atmospheric.
-- Keep the sacred aura of the shrine.
-- Preserve traditional honorifics and standardized Romanization according to the glossary.
-${glossaryPrompt}`;
+  requireApiKey(apiKey);
 
   const client = new Anthropic({ apiKey: apiKey.trim(), dangerouslyAllowBrowser: true });
-  // Haiku 4.5 rejects `effort` and has no server-side fallback; the 5.5 models accept both
-  const isHaiku = model === 'claude-haiku-4-5';
+  const { effort, ...fallback } = requestExtras(model, 'low'); // short subtitle lines need little reasoning
 
   const response = await client.beta.messages
     .parse({
       model,
       max_tokens: 16000,
-      system: systemPrompt,
+      system: translationSystem(glossary),
       messages: [
         {
           role: 'user',
           content: `Please translate this sanctuary text into English:\n"${textToTranslate}"`,
         },
       ],
-      output_config: isHaiku
-        ? { format: TRANSLATION_FORMAT }
-        : { format: TRANSLATION_FORMAT, effort: 'low' as const }, // short subtitle lines need little reasoning
-      // If a safety classifier declines, the API retries on Anthropic's recommended fallback model
-      ...(isHaiku ? {} : { betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' as const }),
+      output_config: effort ? { format: TRANSLATION_FORMAT, effort } : { format: TRANSLATION_FORMAT },
+      ...fallback,
     })
     .catch((error: unknown) => {
       throw new Error(describeApiError(error));
@@ -111,6 +126,85 @@ ${glossaryPrompt}`;
     throw new Error('翻訳結果を読み取れませんでした。再度お試しください。');
   }
   return en;
+}
+
+const BATCH_TRANSLATION_FORMAT = betaJSONSchemaOutputFormat({
+  type: 'object',
+  properties: {
+    translations: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: 'The id of the line, exactly as given' },
+          en: { type: 'string', description: 'The English translation of that line' },
+        },
+        required: ['id', 'en'],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ['translations'],
+  additionalProperties: false,
+} as const);
+
+// Lines sent per request: a whole video's captions usually fit in one, and the answer stays well under max_tokens
+const LINES_PER_REQUEST = 40;
+
+/**
+ * Translate many caption lines in as few requests as possible. Claude sees the lines together,
+ * in playing order, so names and terms stay consistent from line to line. Returns the English
+ * per line id; a line Claude left out of its answer is translated again on its own.
+ * `onProgress` is called with how many lines are done.
+ */
+export async function translateLinesWithClaude(
+  lines: { id: string; ja: string }[],
+  apiKey: string,
+  model: ClaudeModelId,
+  glossary: GlossaryItem[] = [],
+  onProgress?: (done: number) => void
+): Promise<Map<string, string>> {
+  requireApiKey(apiKey);
+  const client = new Anthropic({ apiKey: apiKey.trim(), dangerouslyAllowBrowser: true });
+  const { effort, ...fallback } = requestExtras(model, 'low');
+  const results = new Map<string, string>();
+
+  for (let i = 0; i < lines.length; i += LINES_PER_REQUEST) {
+    const chunk = lines.slice(i, i + LINES_PER_REQUEST);
+    const response = await client.beta.messages
+      .parse({
+        model,
+        max_tokens: 16000,
+        system: translationSystem(glossary),
+        messages: [
+          {
+            role: 'user',
+            content: `These are consecutive on-screen captions of one shrine video, in playing order. Translate each line into English on its own (do not merge or split lines), keeping names and terms consistent across lines. Answer with one entry per line, with its id exactly as given.
+
+${JSON.stringify(chunk.map((l) => ({ id: l.id, ja: l.ja })), null, 1)}`,
+          },
+        ],
+        output_config: effort ? { format: BATCH_TRANSLATION_FORMAT, effort } : { format: BATCH_TRANSLATION_FORMAT },
+        ...fallback,
+      })
+      .catch((error: unknown) => {
+        throw new Error(describeApiError(error));
+      });
+
+    if (response.stop_reason === 'refusal') {
+      throw new Error('Claudeがテロップの翻訳を辞退しました。表現を変えて再度お試しください。');
+    }
+    const ids = new Set(chunk.map((l) => l.id));
+    for (const t of response.parsed_output?.translations ?? []) {
+      if (ids.has(t.id) && t.en.trim()) results.set(t.id, t.en.trim());
+    }
+    // A line missing from the answer (or an answer cut short) is asked for again on its own
+    for (const line of chunk) {
+      if (!results.has(line.id)) results.set(line.id, await translateWithClaude(line.ja, apiKey, model, glossary));
+    }
+    onProgress?.(Math.min(lines.length, i + chunk.length));
+  }
+  return results;
 }
 
 // ---------------------------------------------------------------------------

@@ -2,6 +2,7 @@ import React, { useRef, useEffect, useState } from 'react';
 import { ProjectData, SupportedLanguage } from '../types';
 import { canvasRenderer } from '../services/canvasRenderer';
 import { audioEngine } from '../services/audioEngine';
+import { isOnTitleCard, pictureAt, pictureLayers } from '../services/composition';
 import {
   Play,
   Pause,
@@ -103,6 +104,12 @@ export const VideoPreview: React.FC<VideoPreviewProps> = ({
 
   const isLandscape = project.aspectRatio === '16:9';
 
+  // No photo or video at the playhead (outside the OP/ED cards): the frame is left dark, so say why
+  const hasNoPicture =
+    !isOnTitleCard(project, currentTime) &&
+    !project.mutedTracks?.video &&
+    pictureLayers(pictureAt(project, currentTime)).length === 0;
+
   return (
     <div className="flex-1 flex flex-col bg-[#0b0d11] items-center justify-between p-3 select-none overflow-hidden border-b border-[#1f2631]">
       {/* Aspect Ratio Container */}
@@ -127,6 +134,17 @@ export const VideoPreview: React.FC<VideoPreviewProps> = ({
             </div>
           )}
 
+          {/* Shown on screen only, never drawn into the video */}
+          {hasNoPicture && (
+            <div className="absolute inset-0 flex items-center justify-center p-4 pointer-events-none">
+              <span className="text-xs text-white/60 bg-black/50 border border-white/10 px-3 py-1.5 rounded text-center">
+                {project.videoClips.length === 0
+                  ? '「素材」タブから写真・動画を追加してください'
+                  : 'ここには写真・動画がありません（書き出すと黒い画面になります）'}
+              </span>
+            </div>
+          )}
+
           {/* Aspect ratio watermark */}
           <div className="absolute top-3 right-3 text-[10px] text-white/40 tracking-wider font-mono bg-black/60 px-2 py-0.5 rounded">
             {project.aspectRatio} • {isLandscape ? '1920x1080' : '1080x1920'}
@@ -147,7 +165,7 @@ export const VideoPreview: React.FC<VideoPreviewProps> = ({
           </button>
 
           <button
-            onClick={() => handleStep(-1 / 30)}
+            onClick={() => handleStep(-1 / (project.fps || 30))}
             className="p-1.5 text-[#9aa0a6] hover:text-[#D4AF37] hover:bg-[#1a2330] rounded transition-colors"
             title="1コマ戻る (←)"
           >
@@ -167,7 +185,7 @@ export const VideoPreview: React.FC<VideoPreviewProps> = ({
           </button>
 
           <button
-            onClick={() => handleStep(1 / 30)}
+            onClick={() => handleStep(1 / (project.fps || 30))}
             className="p-1.5 text-[#9aa0a6] hover:text-[#D4AF37] hover:bg-[#1a2330] rounded transition-colors"
             title="1コマ進む (→)"
           >

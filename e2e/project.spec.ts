@@ -159,7 +159,46 @@ test('Claude 翻訳の結果が、その行の英語欄に入る', async ({ page
   expect(headers['x-api-key']).toBe(API_KEY);
   expect(body.model).toBe('claude-opus-5-5');
   expect(JSON.stringify(body.messages)).toContain(initialProjectData.subtitles[0].text.ja);
-  expect(body.system).toContain(initialProjectData.glossary[0].japanese);
+  expect(JSON.stringify(body.system)).toContain(initialProjectData.glossary[0].japanese);
+});
+
+test('一括翻訳は全テロップを1回の依頼で送り、それぞれの英語欄に入る', async ({ page }) => {
+  const requests: any[] = [];
+  await answerClaude(page, async (route) => {
+    const body = route.request().postDataJSON();
+    requests.push(body);
+    // Answer every line that was sent, by its id
+    const sent = JSON.parse(body.messages[0].content.slice(body.messages[0].content.indexOf('[')));
+    const translations = sent.map((line: { id: string }, i: number) => ({ id: line.id, en: `Line ${i + 1}` }));
+    await route.fulfill({
+      status: 200,
+      headers: { 'access-control-allow-origin': '*', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        id: 'msg_batch',
+        type: 'message',
+        role: 'assistant',
+        model: 'claude-opus-5-5',
+        content: [{ type: 'text', text: JSON.stringify({ translations }) }],
+        stop_reason: 'end_turn',
+        stop_sequence: null,
+        usage: { input_tokens: 300, output_tokens: 80 },
+      }),
+    });
+  });
+  await openApp(page);
+  await saveApiKey(page);
+
+  await page.getByRole('button', { name: /全テロップを一括翻訳/ }).click();
+  await expect(page.getByText('すべての解説テロップの英語翻訳が完了しました！')).toBeVisible();
+  expect(requests, '1回の依頼にまとまる').toHaveLength(1);
+  const lineCount = initialProjectData.subtitles.filter((s) => s.text.ja.trim()).length;
+  await expectSaved(
+    page,
+    (p) => p.subtitles.filter((s) => /^Line \d+$/.test(s.text.en)).length === lineCount,
+    'すべての行の英語欄に、その行の訳が入る'
+  );
+  // The system prompt (with the glossary) is marked for caching
+  expect(requests[0].system[0].cache_control).toEqual({ type: 'ephemeral' });
 });
 
 test('API キーが拒否されたら、分かる言葉でエラーを表示する', async ({ page }) => {

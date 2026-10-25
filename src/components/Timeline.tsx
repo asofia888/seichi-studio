@@ -3,6 +3,9 @@ import { ProjectData } from '../types';
 import type { ProjectUpdate } from '../services/projectHistory';
 import { WaveformVisualizer } from './WaveformVisualizer';
 import { isNarrationAudibleAt } from '../services/audioEngine';
+import { clipSpeed, isOverlayClip } from '../services/composition';
+import { audioEditLimits, clipEditLimits } from '../services/timelineEdit';
+import { VideoClipItem } from '../types';
 import {
   Film,
   Type,
@@ -21,6 +24,7 @@ import {
   EyeOff,
   Volume2,
   VolumeX,
+  Layers,
 } from 'lucide-react';
 
 interface TimelineProps {
@@ -46,7 +50,11 @@ interface DragState {
   initialStartTime: number;
   initialDuration: number;
   initialTrimStart: number;
+  /** How far the item may go: clips do not overlap on a track, and nothing runs past its source */
+  limits: { earliestStart: number; latestEnd: number; earliestHead: number; latestTail: number };
 }
+
+const TRANSITION_LABELS = { dissolve: 'ディゾルブ', fade_black: '黒フェード', fade_white: '白フェード' } as const;
 
 export const Timeline: React.FC<TimelineProps> = ({
   project,
@@ -161,6 +169,15 @@ export const Timeline: React.FC<TimelineProps> = ({
     e.stopPropagation();
     onSelectTrackItem(itemType, itemId);
 
+    const unlimited = { earliestStart: 0, latestEnd: Infinity, earliestHead: 0, latestTail: Infinity };
+    const clip = itemType === 'clip' ? project.videoClips.find((c) => c.id === itemId) : undefined;
+    const audio = itemType === 'audio' ? project.audioTracks.find((a) => a.id === itemId) : undefined;
+    const limits = clip
+      ? clipEditLimits(project, clip)
+      : audio
+      ? { ...unlimited, ...audioEditLimits(audio) }
+      : unlimited;
+
     setDragState({
       itemType,
       itemId,
@@ -169,6 +186,7 @@ export const Timeline: React.FC<TimelineProps> = ({
       initialStartTime,
       initialDuration,
       initialTrimStart,
+      limits,
     });
 
     setGhostPreview({
@@ -187,11 +205,13 @@ export const Timeline: React.FC<TimelineProps> = ({
       const pixelsPerSec = rect.width / duration;
       const deltaSec = (e.clientX - dragState.startX) / pixelsPerSec;
 
+      const { limits } = dragState;
       if (dragState.mode === 'move') {
         let newStart = Math.max(0, dragState.initialStartTime + deltaSec);
         newStart = applySnap(newStart, dragState.itemId);
-        // Ensure within timeline bounds
+        // Ensure within timeline bounds, and between the neighbouring clips on the same track
         newStart = Math.min(duration - 0.5, newStart);
+        newStart = Math.max(limits.earliestStart, Math.min(limits.latestEnd - dragState.initialDuration, newStart));
         setGhostPreview({
           startTime: newStart,
           duration: dragState.initialDuration,
@@ -199,6 +219,7 @@ export const Timeline: React.FC<TimelineProps> = ({
       } else if (dragState.mode === 'trim-start') {
         let proposedStart = Math.max(0, dragState.initialStartTime + deltaSec);
         proposedStart = applySnap(proposedStart, dragState.itemId);
+        proposedStart = Math.max(limits.earliestHead, proposedStart);
         const maxStart = dragState.initialStartTime + dragState.initialDuration - 0.5;
         proposedStart = Math.min(maxStart, proposedStart);
         const newDuration = dragState.initialStartTime + dragState.initialDuration - proposedStart;
@@ -210,7 +231,7 @@ export const Timeline: React.FC<TimelineProps> = ({
         let proposedEnd = dragState.initialStartTime + dragState.initialDuration + deltaSec;
         proposedEnd = applySnap(proposedEnd, dragState.itemId);
         const minEnd = dragState.initialStartTime + 0.5;
-        proposedEnd = Math.max(minEnd, proposedEnd);
+        proposedEnd = Math.max(minEnd, Math.min(limits.latestTail, proposedEnd));
         const newDuration = proposedEnd - dragState.initialStartTime;
         setGhostPreview({
           startTime: dragState.initialStartTime,
@@ -238,13 +259,13 @@ export const Timeline: React.FC<TimelineProps> = ({
               ...c,
               startTime: Math.round(startTime * 100) / 100,
               duration: Math.round(newDur * 100) / 100,
-              trimStart: Math.max(0, initialTrimStart + (dragState.mode === 'trim-start' ? deltaStart : 0)),
+              // Trimming the head of a sped-up clip moves further through its source
+              trimStart: Math.max(0, initialTrimStart + (dragState.mode === 'trim-start' ? deltaStart * clipSpeed(c) : 0)),
             };
           });
           onUpdateProject({
             ...project,
             videoClips: updatedClips,
-            duration: Math.max(project.duration, startTime + newDur + 1),
             updatedAt: new Date().toISOString(),
           });
         } else if (itemType === 'subtitle') {
@@ -275,7 +296,6 @@ export const Timeline: React.FC<TimelineProps> = ({
           onUpdateProject({
             ...project,
             audioTracks: updatedAudio,
-            duration: Math.max(project.duration, startTime + newDur + 1),
             updatedAt: new Date().toISOString(),
           });
         } else if (itemType === 'access') {
@@ -307,6 +327,73 @@ export const Timeline: React.FC<TimelineProps> = ({
     };
   }, [dragState, ghostPreview, duration, project, snapEnabled]);
 
+  // One video/photo clip on the main track or the B-roll track
+  const renderVideoClip = (clip: VideoClipItem) => {
+    const isSelected = selectedItemId === clip.id;
+    const isBeingDragged = dragState?.itemId === clip.id;
+    const displayStart = isBeingDragged && ghostPreview ? ghostPreview.startTime : clip.startTime;
+    const displayDur = isBeingDragged && ghostPreview ? ghostPreview.duration : clip.duration;
+    const overlay = isOverlayClip(clip);
+    const speed = clipSpeed(clip);
+    const c = clip.color;
+    const isColorCorrected = !!c && (c.brightness || c.contrast || c.saturation || c.temperature);
+    const transition = clip.transition && clip.transition.duration > 0 ? clip.transition : null;
+
+    return (
+      <div
+        key={clip.id}
+        onMouseDown={(e) => startDrag(e, 'clip', clip.id, 'move', clip.startTime, clip.duration, clip.trimStart)}
+        className={`group absolute h-9 rounded px-2 flex items-center justify-between text-[11px] truncate border cursor-move transition-all ${
+          overlay ? 'bg-[#1e1b4b] border-[#6366F1] text-[#C7D2FE]' : 'bg-[#162942] border-[#2563EB] text-[#BFDBFE]'
+        } ${isSelected ? 'ring-2 ring-white shadow-xl z-20 brightness-110' : 'hover:brightness-125'}`}
+        style={{
+          left: `${getPositionPercent(displayStart)}%`,
+          width: `${getWidthPercent(displayDur)}%`,
+        }}
+        title={clip.name}
+      >
+        {/* How this clip begins: a wedge as long as the transition (centred on the cut on the main track) */}
+        {transition && (
+          <div
+            className={`absolute top-0 bottom-0 pointer-events-none ${
+              transition.type === 'fade_white' ? 'bg-gradient-to-r from-white/50' : transition.type === 'fade_black' ? 'bg-gradient-to-r from-black/80' : 'bg-gradient-to-r from-sky-300/50'
+            } to-transparent`}
+            style={{ left: 0, width: `${Math.min(100, ((overlay ? transition.duration : transition.duration / 2) / Math.max(0.01, displayDur)) * 100)}%` }}
+            title={`${TRANSITION_LABELS[transition.type]} ${transition.duration}秒`}
+          />
+        )}
+
+        {/* Left Trim Handle */}
+        <div
+          onMouseDown={(e) => startDrag(e, 'clip', clip.id, 'trim-start', clip.startTime, clip.duration, clip.trimStart)}
+          className="absolute left-0 top-0 bottom-0 w-2.5 cursor-ew-resize bg-blue-400/40 hover:bg-blue-300 z-30 rounded-l opacity-0 group-hover:opacity-100 transition-opacity"
+          title="開始位置をトリミング"
+        />
+
+        <span className="truncate flex items-center space-x-1 select-none pointer-events-none">
+          {overlay ? <Layers className="w-3 h-3 mr-1 inline shrink-0" /> : <Film className="w-3 h-3 mr-1 inline shrink-0" />}
+          <span className="truncate">{clip.name}</span>
+          {clip.kenBurns?.enabled && clip.type === 'image' && (
+            <span className="text-[9px] bg-blue-500/30 text-blue-200 px-1 rounded ml-1 shrink-0">KB</span>
+          )}
+          {speed !== 1 && (
+            <span className="text-[9px] bg-amber-500/30 text-amber-200 px-1 rounded ml-1 shrink-0 font-mono">{speed}x</span>
+          )}
+          {isColorCorrected && (
+            <span className="text-[9px] bg-pink-500/30 text-pink-200 px-1 rounded ml-1 shrink-0">色</span>
+          )}
+        </span>
+
+        {/* Right Trim Handle */}
+        <div
+          onMouseDown={(e) => startDrag(e, 'clip', clip.id, 'trim-end', clip.startTime, clip.duration, clip.trimStart)}
+          className="absolute right-0 top-0 bottom-0 w-2.5 cursor-ew-resize bg-blue-400/40 hover:bg-blue-300 z-30 rounded-r opacity-0 group-hover:opacity-100 transition-opacity"
+          title="終了位置をトリミング"
+        />
+      </div>
+    );
+  };
+
   // Generate dynamic time tick markers
   const ticks = [];
   const step = duration > 100 ? 10 : duration > 40 ? 5 : 2;
@@ -315,7 +402,7 @@ export const Timeline: React.FC<TimelineProps> = ({
   }
 
   return (
-    <section aria-label="タイムライン" className="h-72 bg-[#0c0f15] border-t border-[#1d2430] flex flex-col select-none">
+    <section aria-label="タイムライン" className="h-[20rem] bg-[#0c0f15] border-t border-[#1d2430] flex flex-col select-none">
       {/* Timeline Toolbar Header */}
       <div className="h-8 bg-[#131722] border-b border-[#202735] px-4 flex items-center justify-between text-xs text-[#8c97a8]">
         {/* Left: Title & Editing Tools */}
@@ -439,7 +526,15 @@ export const Timeline: React.FC<TimelineProps> = ({
             </button>
           </div>
 
-          {/* Track 2: Visuals */}
+          {/* Track 2a: B-roll */}
+          <div className="h-11 border-b border-[#1b222d] px-2 flex items-center text-[#A5B4FC]" title="本編の上に重ねる映像（Bロール）。本編の音声はそのまま聞こえます">
+            <div className="flex items-center space-x-1.5 truncate">
+              <Layers className="w-3.5 h-3.5 text-[#818CF8] shrink-0" />
+              <span className="truncate text-[11px]">Bロール（重ねる）</span>
+            </div>
+          </div>
+
+          {/* Track 2b: Visuals */}
           <div className="h-11 border-b border-[#1b222d] px-2 flex items-center justify-between text-[#93C5FD]">
             <div className="flex items-center space-x-1.5 truncate">
               <Film className="w-3.5 h-3.5 text-[#3B82F6] shrink-0" />
@@ -647,57 +742,14 @@ export const Timeline: React.FC<TimelineProps> = ({
               )}
             </div>
 
-            {/* Track 2: Video & Photo Clips */}
+            {/* Track 2a: B-roll laid over the main track */}
+            <div className="h-11 border-b border-[#161c27] relative px-1 flex items-center bg-[#0b0e15]">
+              {project.videoClips.filter(isOverlayClip).map(renderVideoClip)}
+            </div>
+
+            {/* Track 2b: Main video & photo clips */}
             <div className="h-11 border-b border-[#161c27] relative px-1 flex items-center">
-              {project.videoClips.map((clip) => {
-                const isSelected = selectedItemId === clip.id;
-                const isBeingDragged = dragState?.itemId === clip.id;
-                const displayStart = isBeingDragged && ghostPreview ? ghostPreview.startTime : clip.startTime;
-                const displayDur = isBeingDragged && ghostPreview ? ghostPreview.duration : clip.duration;
-
-                return (
-                  <div
-                    key={clip.id}
-                    onMouseDown={(e) => startDrag(e, 'clip', clip.id, 'move', clip.startTime, clip.duration, clip.trimStart)}
-                    className={`group absolute h-9 rounded px-2 flex items-center justify-between text-[11px] truncate bg-[#162942] border border-[#2563EB] text-[#BFDBFE] cursor-move transition-all ${
-                      isSelected ? 'ring-2 ring-white shadow-xl z-20 brightness-110' : 'hover:brightness-125'
-                    }`}
-                    style={{
-                      left: `${getPositionPercent(displayStart)}%`,
-                      width: `${getWidthPercent(displayDur)}%`,
-                    }}
-                    title={clip.name}
-                  >
-                    {/* Left Trim Handle */}
-                    <div
-                      onMouseDown={(e) =>
-                        startDrag(e, 'clip', clip.id, 'trim-start', clip.startTime, clip.duration, clip.trimStart)
-                      }
-                      className="absolute left-0 top-0 bottom-0 w-2.5 cursor-ew-resize bg-blue-400/40 hover:bg-blue-300 z-30 rounded-l opacity-0 group-hover:opacity-100 transition-opacity"
-                      title="開始位置をトリミング"
-                    />
-
-                    <span className="truncate flex items-center space-x-1 select-none pointer-events-none">
-                      <Film className="w-3 h-3 mr-1 inline shrink-0" />
-                      <span className="truncate">{clip.name}</span>
-                      {clip.kenBurns?.enabled && (
-                        <span className="text-[9px] bg-blue-500/30 text-blue-200 px-1 rounded ml-1 shrink-0">
-                          KB
-                        </span>
-                      )}
-                    </span>
-
-                    {/* Right Trim Handle */}
-                    <div
-                      onMouseDown={(e) =>
-                        startDrag(e, 'clip', clip.id, 'trim-end', clip.startTime, clip.duration, clip.trimStart)
-                      }
-                      className="absolute right-0 top-0 bottom-0 w-2.5 cursor-ew-resize bg-blue-400/40 hover:bg-blue-300 z-30 rounded-r opacity-0 group-hover:opacity-100 transition-opacity"
-                      title="終了位置をトリミング"
-                    />
-                  </div>
-                );
-              })}
+              {project.videoClips.filter((c) => !isOverlayClip(c)).map(renderVideoClip)}
             </div>
 
             {/* Track 3: Narration Track */}

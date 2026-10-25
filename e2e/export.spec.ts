@@ -3,14 +3,29 @@
  */
 import { readFileSync } from 'node:fs';
 import type { Page } from '@playwright/test';
+import { ALL_FORMATS, BlobSource, Input } from 'mediabunny';
 import { makePng, makeWav, MIC_TONE_HZ } from './media';
-import { addPhotos, expect, openApp, openTab, pressShortcut, seek, startEmptyProject, test, timeline } from './app';
+import { makeVideos } from './videos';
+import {
+  addPhotos,
+  expect,
+  expectSaved,
+  openApp,
+  openTab,
+  pressShortcut,
+  savedProject,
+  seek,
+  startEmptyProject,
+  test,
+  timeline,
+} from './app';
 
 // Encoding a 1080p video takes a while in a test browser without a graphics card
 test.describe.configure({ timeout: 240_000 });
 
 const RED: [number, number, number] = [200, 30, 30];
 const BLUE: [number, number, number] = [30, 60, 200];
+const GREEN: [number, number, number] = [40, 180, 60];
 const BGM_HZ = 440;
 const GRID_W = 32;
 const GRID_H = 18;
@@ -20,9 +35,10 @@ interface Frame {
   pixels: number[][];
 }
 
-/** Export with the dialog and return the downloaded file */
-async function exportVideo(page: Page) {
+/** Export with the dialog and return the downloaded file; `choices` are the option buttons to press first */
+async function exportVideo(page: Page, ...choices: RegExp[]) {
   await page.getByRole('button', { name: '書き出し', exact: true }).click();
+  for (const choice of choices) await page.getByRole('button', { name: choice }).click();
   const downloading = page.waitForEvent('download', { timeout: 200_000 });
   await page.getByRole('button', { name: /動画書き出しを開始/ }).click();
   const download = await downloading;
@@ -84,13 +100,30 @@ async function toneLevels(page: Page, bytes: Buffer, freqs: number[], windows: [
         }
         return (2 * Math.sqrt(Math.max(0, s1 * s1 + s2 * s2 - coeff * s1 * s2))) / (to - from);
       };
+      let peak = 0;
+      for (let c = 0; c < audio.numberOfChannels; c++) {
+        for (const v of audio.getChannelData(c)) peak = Math.max(peak, Math.abs(v));
+      }
       return {
         duration: audio.duration,
         levels: freqs.map((f) => windows.map((w) => level(f, w))),
+        peak,
       };
     },
     { base64: bytes.toString('base64'), freqs, windows }
   );
+}
+
+/** Frame rate and picture size of a video file, read from the file itself */
+async function videoStats(bytes: Buffer) {
+  const input = new Input({ source: new BlobSource(new Blob([new Uint8Array(bytes)])), formats: ALL_FORMATS });
+  try {
+    const track = (await input.getPrimaryVideoTrack())!;
+    const stats = await track.computePacketStats();
+    return { fps: stats.averagePacketRate, width: track.displayWidth, height: track.displayHeight };
+  } finally {
+    input.dispose();
+  }
 }
 
 const average = (pixels: number[][]) =>
@@ -105,12 +138,14 @@ const difference = (a: Frame, b: Frame, fromRow: number, toRow: number) => {
 };
 const isRed = ([r, g, b]: number[]) => r > 120 && g < 90 && b < 90;
 const isBlue = ([r, g, b]: number[]) => b > 120 && r < 90;
+const isDark = (rgb: number[]) => rgb.every((v) => v < 30);
+const isGreen = ([r, g, b]: number[]) => g > 120 && r < 90 && b < 110;
 const expectColor = (rgb: number[], matches: (rgb: number[]) => boolean, message: string) =>
   expect(matches(rgb), `${message}（実際の色: ${rgb.map(Math.round).join(', ')}）`).toBe(true);
 
 test('写真とテロップを書き出すと、MP4 の映像に正しい順番・時刻で入る（音声なし）', async ({ page }) => {
   await startEmptyProject(page, '書き出しテスト');
-  // The first clip starts at 3 s: red 3-11 s, blue 11-19 s
+  // The first clip starts at 3 s (nothing before it): red 3-11 s, blue 11-19 s
   await addPhotos(page, [
     { name: '朱の鳥居.png', png: makePng(RED) },
     { name: '青い空.png', png: makePng(BLUE) },
@@ -123,12 +158,13 @@ test('写真とテロップを書き出すと、MP4 の映像に正しい順番�
   await expect(page.getByText('書き出しが完了しました（MP4 (H.264)）')).toBeVisible();
   expect(file.name).toBe('書き出しテスト_JA_16x9.mp4');
 
-  const video = await framesAt(page, file.bytes, 'video/mp4', [6, 10.5, 15]);
+  const video = await framesAt(page, file.bytes, 'video/mp4', [1.5, 6, 10.5, 15]);
   expect(video.width).toBe(1920);
   expect(video.height).toBe(1080);
   expect(video.duration).toBeCloseTo(19, 0);
 
-  const [withTelop, red, blue] = video.frames;
+  const [gap, withTelop, red, blue] = video.frames;
+  expectColor(average(gap.pixels), isDark, '写真のない1.5秒は、文字も絵もない黒い画面');
   expectColor(center(red), isRed, '10.5秒は赤い写真');
   expectColor(center(blue), isBlue, '15秒は青い写真');
   expectColor(center(withTelop), isRed, 'テロップがあっても写真は見える');
@@ -141,9 +177,48 @@ test('写真とテロップを書き出すと、MP4 の映像に正しい順番�
   expect(Math.max(...otherRows), 'テロップ以外は写真のまま').toBeLessThan(5);
 });
 
+test('ディゾルブ・色補正・Bロールが、書き出した映像に入る', async ({ page }) => {
+  await startEmptyProject(page, 'つなぎテスト');
+  await addPhotos(page, [
+    { name: '朱の鳥居.png', png: makePng(RED) },
+    { name: '青い空.png', png: makePng(BLUE) },
+  ]); // red 3-11 s, blue 11-19 s
+
+  // Red at half brightness
+  await timeline(page).getByTitle('朱の鳥居', { exact: true }).click();
+  await page.getByLabel('明るさ').fill('-50');
+  // A 2 s dissolve from red into blue, centred on the cut at 11 s
+  await timeline(page).getByTitle('青い空', { exact: true }).click();
+  await page.getByRole('button', { name: 'ディゾルブ', exact: true }).click();
+  await page.getByLabel('長さ', { exact: true }).fill('2');
+  // Green B-roll from 15 s, dissolving in over 0.5 s
+  await seek(page, 15);
+  const choosing = page.waitForEvent('filechooser');
+  await page.getByRole('button', { name: /Bロールとして再生位置に重ねる/ }).click();
+  await (await choosing).setFiles({ name: '苔.png', mimeType: 'image/png', buffer: makePng(GREEN) });
+  await expect(timeline(page).getByTitle('苔', { exact: true })).toBeVisible();
+
+  const file = await exportVideo(page);
+  const video = await framesAt(page, file.bytes, 'video/mp4', [6, 11, 13, 17.5]);
+  expect(video.duration).toBeCloseTo(19, 0);
+  const [darkRed, mixed, blue, green] = video.frames.map(center);
+
+  expect(darkRed[0], '明るさを下げた赤（元は200）').toBeGreaterThan(70);
+  expect(darkRed[0], '明るさを下げた赤（元は200）').toBeLessThan(130);
+  expect(mixed[0], '切り替わりの瞬間は赤と青が半分ずつ').toBeGreaterThan(40);
+  expect(mixed[2], '切り替わりの瞬間は赤と青が半分ずつ').toBeGreaterThan(80);
+  expect(mixed[2], '切り替わりの瞬間は赤と青が半分ずつ').toBeLessThan(160);
+  expectColor(blue, isBlue, '13秒は青い写真');
+  expectColor(green, isGreen, '17.5秒は上に重ねた緑の Bロール');
+});
+
 test('BGM とナレーションを書き出すと、話している間だけ BGM が下がる（WebM）', async ({ page }) => {
   await startEmptyProject(page, '音声テスト');
-  await addPhotos(page, [{ name: '朱の鳥居.png', png: makePng(RED) }]); // 3-11 s, the video is 11 s
+  // 3-11 s and 11-19 s: the BGM fades out from 17 s, well after the narration
+  await addPhotos(page, [
+    { name: '朱の鳥居.png', png: makePng(RED) },
+    { name: '青い空.png', png: makePng(BLUE) },
+  ]);
 
   await openTab(page, '音声');
   const choosing = page.waitForEvent('filechooser');
@@ -158,26 +233,108 @@ test('BGM とナレーションを書き出すと、話している間だけ BGM
   await page.waitForTimeout(2500);
   await pressShortcut(page, 'r');
   await expect(timeline(page).getByTitle('録音 (5.0s) 🎙️', { exact: true })).toBeVisible();
+  // A busy test machine records a little longer than 2.5 s, so measure from where the take really ends
+  await expectSaved(page, (p) => p.audioTracks.some((a) => a.isRecorded), '録音が保存される');
+  const take = (await savedProject(page))!.audioTracks.find((a) => a.isRecorded)!;
+  const speechEnd = take.startTime + take.duration;
 
   const file = await exportVideo(page);
   // This test browser cannot encode AAC, so a video with sound is written as WebM
   await expect(page.getByText(/書き出しが完了しました（WebM \(VP\d \/ Opus\)）/)).toBeVisible();
   expect(file.name).toBe('音声テスト_JA_16x9.webm');
+  // The soundtrack is brought to YouTube's loudness (the default choice)
+  await expect(page.getByText(/音量 -1[34]\.\d LUFS/)).toBeVisible();
 
   const video = await framesAt(page, file.bytes, 'video/webm', [6]);
   expectColor(center(video.frames[0]), isRed, '6秒は赤い写真');
 
   const before: [number, number] = [2, 3.5]; // after the BGM fade-in
   const during: [number, number] = [5.6, 6.8];
-  const after: [number, number] = [8.4, 8.9]; // after the BGM comes back, before its fade-out
+  const after: [number, number] = [speechEnd + 0.6, speechEnd + 1.2]; // the BGM comes back up over 0.35 s
   const sound = await toneLevels(page, file.bytes, [BGM_HZ, MIC_TONE_HZ], [before, during, after]);
   const [bgm, mic] = sound.levels;
-  expect(sound.duration).toBeCloseTo(11, 0);
+  expect(sound.duration).toBeCloseTo(19, 0);
 
   expect(bgm[0], 'BGM が鳴っている').toBeGreaterThan(0.05);
   expect(bgm[1] / bgm[0], '話している間は BGM が下がる').toBeLessThan(0.5);
   expect(bgm[2] / bgm[0], '話し終わると BGM が戻る').toBeGreaterThan(0.7);
   expect(mic[1], '録音したナレーションが聞こえる').toBeGreaterThan(5 * mic[0]);
+});
+
+test('音が重なって大きくなっても、書き出した音声は割れない（音量をそろえない場合も）', async ({ page }) => {
+  await startEmptyProject(page, '音割れテスト');
+  await addPhotos(page, [{ name: '朱の鳥居.png', png: makePng(RED) }]); // the video is 11 s
+
+  // Two loud tones a beat apart: once a second they peak together at about 0.65 + 0.45 = 1.1, above full scale
+  await openTab(page, '音声');
+  for (const [button, name, freq] of [
+    [/手持ちのBGM音源/, '雅楽', BGM_HZ],
+    [/自然音の音源ファイル/, 'せせらぎ', BGM_HZ + 1],
+  ] as const) {
+    const choosing = page.waitForEvent('filechooser');
+    await page.getByRole('button', { name: button }).click();
+    await (await choosing).setFiles({ name: `${name}.wav`, mimeType: 'audio/wav', buffer: makeWav(freq, 12, 1) });
+    await expect(timeline(page).getByTitle(name, { exact: true })).toBeVisible();
+  }
+
+  const file = await exportVideo(page, /そろえない/);
+  await expect(page.getByText(/書き出しが完了しました/)).toBeVisible();
+  await expect(page.getByText(/音量 .*・ピーク -1\.[5-9] dBFS/)).toBeVisible();
+
+  const sound = await toneLevels(page, file.bytes, [BGM_HZ], [[3, 8]]);
+  expect(sound.peak, '一番大きいところでも 0 dBFS に届かない').toBeLessThan(0.95);
+  expect(sound.levels[0][0], '音量は下げすぎない（そろえないので、大きいところだけを抑える）').toBeGreaterThan(0.3);
+});
+
+test('動画の音は使う部分だけが正しい時刻に入り、60fps で書き出せる', async ({ page, browser }) => {
+  // 12 s of footage with talking (a 140 Hz buzz) from 4 to 7 s
+  const [footage] = await makeVideos(browser, [
+    { name: '拝殿.mp4', seconds: 12, color: '#1565c0', speech: [4, 7], recordedAt: '2026-10-01T00:40:00Z' },
+  ]);
+  await startEmptyProject(page, '動画音声テスト');
+  await openTab(page, '素材');
+  await page.locator('input[type=file][accept="video/*,image/*"]').setInputFiles(footage);
+  const clip = timeline(page).getByTitle('拝殿', { exact: true });
+  await expect(clip).toBeVisible(); // 3-15 s
+
+  // Cut off the first 5 s of footage: split at 8 s and delete the first piece, so the rest moves up to 3 s
+  await clip.click();
+  await seek(page, 8);
+  await pressShortcut(page, 's');
+  await clip.click();
+  await pressShortcut(page, 'Delete');
+  await expectSaved(
+    page,
+    (p) => p.videoClips.length === 1 && p.videoClips[0].startTime === 3 && Math.abs(p.videoClips[0].trimStart - 5) < 0.01,
+    '残りの部分（素材の5秒目から）が3秒目に詰まる'
+  );
+
+  const file = await exportVideo(page, /^60/);
+  await expect(page.getByText(/書き出しが完了しました/)).toBeVisible();
+  const stats = await videoStats(file.bytes);
+  expect(stats.fps).toBeCloseTo(60, 0);
+
+  // The talking left (footage 5-7 s) is heard at 3-5 s of the video, and nothing after it
+  const sound = await toneLevels(page, file.bytes, [140], [[3.3, 4.7], [6, 9]]);
+  expect(sound.duration).toBeCloseTo(10, 0);
+  const [talking, quiet] = sound.levels[0];
+  expect(talking, '話している部分が、詰めた後の時刻で聞こえる').toBeGreaterThan(10 * quiet);
+});
+
+test('4K（3840×2160）で書き出せる', async ({ page }) => {
+  await startEmptyProject(page, '4Kテスト');
+  await addPhotos(page, [{ name: '朱の鳥居.png', png: makePng(RED, 1280, 720) }]);
+  // Keep it short: 4K takes a while to encode in a test browser
+  await timeline(page).getByTitle('朱の鳥居', { exact: true }).click();
+  await page.locator('label', { hasText: '表示尺' }).locator('xpath=following-sibling::input[1]').fill('2');
+  await expectSaved(page, (p) => p.duration === 5, '写真は3〜5秒');
+
+  const file = await exportVideo(page, /^2160p/);
+  expect(file.name).toMatch(/^4Kテスト_JA_16x9_4K\.(mp4|webm)$/);
+  const stats = await videoStats(file.bytes);
+  expect([stats.width, stats.height]).toEqual([3840, 2160]);
+  const video = await framesAt(page, file.bytes, file.name.endsWith('mp4') ? 'video/mp4' : 'video/webm', [4]);
+  expectColor(center(video.frames[0]), isRed, '4K でも写真がそのまま入る');
 });
 
 test('書き出しは途中で中止でき、ファイルは作られない', async ({ page }) => {

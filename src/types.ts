@@ -5,6 +5,7 @@
 export type AspectRatio = '16:9' | '9:16';
 export type SubtitleCategory = 'sanctuary_header' | 'commentary' | 'etiquette_tip';
 export type SupportedLanguage = 'ja' | 'en';
+export type TransitionType = 'dissolve' | 'fade_black' | 'fade_white';
 
 export interface LocalizedText {
   ja: string;
@@ -23,6 +24,7 @@ export interface ProjectData {
 
   branding: BrandingSettings;
   glossary: GlossaryItem[];
+  vignette?: number; // 写真・動画の周辺を暗くする強さ 0（なし）〜1。未設定は DEFAULT_VIGNETTE
 
   videoClips: VideoClipItem[];
   subtitles: MultilingualSubtitleItem[];
@@ -65,8 +67,15 @@ export interface VideoClipItem {
   duration: number;     // 表示尺
   trimStart: number;
   trimEnd: number;
+  sourceDuration?: number; // 動画ファイル自体の長さ（秒）。トリムはこの範囲まで
   volume?: number;      // 動画の元音声の音量 0.0 - 1.0（未設定は1.0）
   speechRanges?: [number, number][]; // 元動画内で人が話している区間（素材ファイル内の秒）。BGMはこの間も下がる
+  track?: 'main' | 'overlay'; // 'overlay' = Bロール（本編の上に重ねる映像）。未設定は本編
+  speed?: number;       // 再生速度 0.25〜4（未設定は1）。動画のみ
+  // 前のクリップからのつなぎ（未設定はカット）。Bロールでは入りと出の両方
+  transition?: { type: TransitionType; duration: number };
+  // 色補正。各 -50〜+50（0で補正なし）
+  color?: { brightness: number; contrast: number; saturation: number; temperature: number };
 
   // ケン・バーンズ効果 (写真用)
   kenBurns?: {
@@ -140,6 +149,7 @@ export interface AudioTrackItem {
   blobKey?: string;
   isRecorded?: boolean;
   waveform?: number[]; // Normalized waveform peak heights (0.0 to 1.0)
+  sourceDuration?: number; // Length of the sound file (seconds); trims stay inside it
   trimStart?: number; // Offset from start of source audio (seconds)
   fadeInSec?: number; // Fade in duration (seconds)
   fadeOutSec?: number; // Fade out duration (seconds)
