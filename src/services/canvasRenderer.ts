@@ -6,7 +6,6 @@
  */
 import {
   ProjectData,
-  VideoClipItem,
   MultilingualSubtitleItem,
   AccessCardItem,
   SupportedLanguage,
@@ -49,25 +48,27 @@ export class CanvasRenderer {
    * Load an image into the cache and wait until it can be drawn
    */
   public async preloadImage(url: string): Promise<HTMLImageElement> {
-    let img = this.imageCache.get(url);
-    if (!img) {
-      img = new Image();
-      img.src = url;
-      this.imageCache.set(url, img);
-    }
+    const img = this.cachedImage(url);
     await img.decode(); // rejects if the image is broken
     return img;
   }
 
   /** Cached image for a URL: starts loading on first use and returns null until it is ready */
   private getLoadedImage(url: string): HTMLImageElement | null {
+    const img = this.cachedImage(url);
+    return img.complete && img.naturalWidth > 0 ? img : null;
+  }
+
+  private cachedImage(url: string): HTMLImageElement {
     let img = this.imageCache.get(url);
     if (!img) {
       img = new Image();
+      // Loading finishes after the frame was drawn without it; while paused nothing else would redraw it
+      img.addEventListener('load', () => this.onVideoFrameReady?.());
       img.src = url;
       this.imageCache.set(url, img);
     }
-    return img.complete && img.naturalWidth > 0 ? img : null;
+    return img;
   }
 
   /**
@@ -150,7 +151,7 @@ export class CanvasRenderer {
     return vid;
   }
 
-  /** Called when a preview video has a new frame to show (it finished loading or seeking) */
+  /** Called when the preview has something new to show: a video finished loading or seeking, or a photo finished loading */
   public onVideoFrameReady: (() => void) | null = null;
 
   /**

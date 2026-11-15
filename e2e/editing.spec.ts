@@ -140,6 +140,61 @@ test('? でショートカット一覧を開き、Esc で閉じる', async ({ pa
   await expect(page.getByText('キーボードショートカット一覧')).toHaveCount(0);
 });
 
+test('ダイアログを開いている間は、裏のタイムラインにショートカットが効かない', async ({ page }) => {
+  await openApp(page);
+  const clip = timeline(page).getByTitle(LAST_CLIP, { exact: true });
+  await clip.click();
+  await seek(page, 30); // inside the selected clip, so S could split it
+
+  await page.getByRole('button', { name: '書き出し', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: '動画書き出し' });
+  await expect(dialog).toBeVisible();
+  for (const key of ['Delete', 's', 'r', 'Space', '?']) await pressShortcut(page, key);
+
+  await expect(dialog).toBeVisible();
+  await expect(clip).toBeVisible();
+  await expect(timeline(page).getByTitle(`${LAST_CLIP} (分割)`)).toHaveCount(0);
+  await expect(page.getByText('ナレーション録音中...')).toHaveCount(0);
+  await expect(page.getByText('キーボードショートカット一覧')).toHaveCount(0);
+  await expect(playheadTime(page)).toHaveText('00:30.0'); // Space did not start playback
+  await expect(undoButton(page)).toBeDisabled();
+
+  // Once the dialog is closed, the shortcuts work again
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await pressShortcut(page, 'Delete');
+  await expect(clip).toHaveCount(0);
+});
+
+test('どのダイアログも Esc で閉じる', async ({ page }) => {
+  await openApp(page);
+  const dialogs = [
+    { button: 'おまかせ編集', name: 'おまかせ編集' },
+    { button: 'サムネイル', name: 'サムネイル作成' },
+    { button: '書き出し', name: '動画書き出し' },
+    { button: 'プロジェクト', name: 'プロジェクト' },
+  ];
+  for (const { button, name } of dialogs) {
+    await page.getByRole('button', { name: button, exact: true }).click();
+    const dialog = page.getByRole('dialog', { name });
+    await expect(dialog).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(dialog).toHaveCount(0);
+  }
+});
+
+test('再生中にダイアログを開くと、再生が止まる', async ({ page }) => {
+  await openApp(page);
+  await pressShortcut(page, 'Space');
+  await expect(playheadTime(page)).not.toHaveText('00:00.0');
+
+  await page.getByRole('button', { name: '書き出し', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: '動画書き出し' })).toBeVisible();
+  const stoppedAt = await playheadTime(page).textContent();
+  await page.waitForTimeout(500);
+  await expect(playheadTime(page)).toHaveText(stoppedAt!);
+});
+
 test('Space で再生と一時停止', async ({ page }) => {
   await openApp(page);
   await pressShortcut(page, 'Space');

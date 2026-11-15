@@ -2,6 +2,7 @@ import React, { useRef, useState } from 'react';
 import { ProjectData } from '../../types';
 import type { AutoEditProgress, AutoEditSummary } from '../../services/autoEdit';
 import { loadClaudeSettings } from '../../services/claudeApi';
+import { useDialog } from './useDialog';
 import {
   X,
   WandSparkles,
@@ -55,6 +56,16 @@ export const AutoEditModal: React.FC<AutoEditModalProps> = ({ isOpen, onClose, p
   const [summary, setSummary] = useState<AutoEditSummary | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+
+  // The next time the dialog opens, it starts fresh rather than showing the last result
+  const handleClose = () => {
+    setSummary(null);
+    setErrorMessage(null);
+    setProgress(null);
+    onClose();
+  };
+  // Not while an edit is running: the progress and the cancel button must stay in view
+  const dialogRef = useDialog(isOpen, handleClose, !isRunning);
 
   if (!isOpen) return null;
 
@@ -111,18 +122,10 @@ export const AutoEditModal: React.FC<AutoEditModalProps> = ({ isOpen, onClose, p
     }
   };
 
-  // The next time the dialog opens, it starts fresh rather than showing the last result
-  const handleClose = () => {
-    setSummary(null);
-    setErrorMessage(null);
-    setProgress(null);
-    onClose();
-  };
-
   const totalSize = files.reduce((t, f) => t + f.size, 0);
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+    <div ref={dialogRef} tabIndex={-1} role="dialog" aria-modal="true" aria-label="おまかせ編集" className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
       <div className="bg-[#121620] border border-[#2b384c] rounded-xl max-w-xl w-full p-5 space-y-4 shadow-2xl max-h-[92vh] overflow-y-auto">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-[#212937] pb-3">
@@ -141,12 +144,13 @@ export const AutoEditModal: React.FC<AutoEditModalProps> = ({ isOpen, onClose, p
           <AutoEditResult summary={summary} onClose={handleClose} />
         ) : (
           <>
-            <p className="text-[11px] text-gray-400 leading-relaxed">
+            <p className="text-xs text-gray-400 leading-relaxed">
               撮影した動画をまとめて入れると、撮影順に並べ、話している部分は残し、景色の場面はブレの少ない見どころだけを切り出して、指定の長さに編集します。
               解析はこのブラウザの中で行います。
             </p>
 
             {/* File drop area */}
+            {/* oxlint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- dropping files on it is an extra; the file input inside this label is what the keyboard and screen readers use */}
             <label
               onDragOver={(e) => {
                 e.preventDefault();
@@ -164,8 +168,9 @@ export const AutoEditModal: React.FC<AutoEditModalProps> = ({ isOpen, onClose, p
             >
               <Upload className="w-5 h-5 mx-auto text-[#D4AF37] mb-1.5" />
               <div className="text-xs text-gray-200">動画ファイルをここにドロップ、またはクリックして選択</div>
-              <div className="text-[10px] text-gray-500 mt-0.5">複数選択できます（MP4 / MOV など）</div>
+              <div className="text-[11px] text-gray-400 mt-0.5">複数選択できます（MP4 / MOV など）</div>
               <input
+                aria-label="動画ファイル"
                 type="file"
                 accept="video/*"
                 multiple
@@ -179,19 +184,19 @@ export const AutoEditModal: React.FC<AutoEditModalProps> = ({ isOpen, onClose, p
             </label>
 
             {files.length > 0 && (
-              <div className="bg-[#151c27] border border-[#263345] rounded-lg p-2.5 text-[11px] space-y-1">
+              <div className="bg-[#151c27] border border-[#263345] rounded-lg p-2.5 text-xs space-y-1">
                 <div className="flex justify-between text-gray-300">
                   <span className="flex items-center space-x-1">
                     <Film className="w-3.5 h-3.5 text-[#60A5FA]" />
                     <span>{files.length} 本の動画（{(totalSize / 1024 / 1024).toFixed(0)} MB）</span>
                   </span>
                   {!isRunning && (
-                    <button onClick={() => setFiles([])} className="text-gray-500 hover:text-red-300">
+                    <button onClick={() => setFiles([])} className="text-gray-400 hover:text-red-300">
                       すべて外す
                     </button>
                   )}
                 </div>
-                <div className="max-h-24 overflow-y-auto text-gray-500 space-y-0.5">
+                <div className="max-h-24 overflow-y-auto text-gray-400 space-y-0.5">
                   {files.map((f) => (
                     <div key={`${f.name}_${f.size}_${f.lastModified}`} className="truncate">
                       {f.name}
@@ -208,6 +213,7 @@ export const AutoEditModal: React.FC<AutoEditModalProps> = ({ isOpen, onClose, p
                   神社・聖地の名前{willUseClaude && <span className="text-[#C84B31]"> *</span>}
                 </label>
                 <input
+                  aria-label="神社・聖地の名前"
                   type="text"
                   value={shrineName}
                   disabled={isRunning}
@@ -221,6 +227,7 @@ export const AutoEditModal: React.FC<AutoEditModalProps> = ({ isOpen, onClose, p
                   仕上がりの長さ（{isLandscape ? '横 16:9' : '縦 9:16'}）
                 </label>
                 <select
+                  aria-label="仕上がりの長さ"
                   value={target}
                   disabled={isRunning}
                   onChange={(e) => setTargetSec(Number(e.target.value))}
@@ -234,7 +241,7 @@ export const AutoEditModal: React.FC<AutoEditModalProps> = ({ isOpen, onClose, p
                 </select>
               </div>
             </div>
-            <p className="text-[10px] text-gray-500 -mt-1">
+            <p className="text-[11px] text-gray-400 -mt-1">
               縦横の切り替えはヘッダーのボタンで行えます。話している部分は切らないため、指定より長くなることがあります。
             </p>
 
@@ -250,7 +257,7 @@ export const AutoEditModal: React.FC<AutoEditModalProps> = ({ isOpen, onClose, p
                 />
                 <span className="text-gray-200">
                   Claude に各場面を見せて、聖地名カード・解説テロップ・参拝作法・チャプター・アクセス案内（日本語と英語）を作らせる
-                  <span className="block text-[10px] text-gray-500 mt-0.5">
+                  <span className="block text-[11px] text-gray-400 mt-0.5">
                     {hasApiKey
                       ? 'API の利用料金がかかります（動画の本数が多いほど増えます）。'
                       : 'Claude API キーが未設定です。「翻訳」タブで保存すると使えます。未設定のままでも、並べ替えと切り出しは行えます。'}
@@ -259,16 +266,17 @@ export const AutoEditModal: React.FC<AutoEditModalProps> = ({ isOpen, onClose, p
               </label>
               {willUseClaude && (
                 <div className="space-y-1">
-                  <label className="text-gray-300 font-medium">メモ（任意・正確な情報があれば）</label>
+                  <label htmlFor="auto-field-1" className="text-gray-300 font-medium">メモ（任意・正確な情報があれば）</label>
                   <textarea
+                    id="auto-field-1"
                     value={notes}
                     disabled={isRunning}
                     onChange={(e) => setNotes(e.target.value)}
                     rows={3}
                     placeholder={'例: 御祭神は天手力雄命。駐車場は奥社入口に有料150台。\n撮影は10月の早朝、杉並木と随神門を中心に。'}
-                    className="w-full bg-[#151a23] text-[#F7F6F2] px-2.5 py-1.5 rounded border border-[#2c3747] focus:border-[#D4AF37] outline-none resize-none text-[11px] leading-relaxed"
+                    className="w-full bg-[#151a23] text-[#F7F6F2] px-2.5 py-1.5 rounded border border-[#2c3747] focus:border-[#D4AF37] outline-none resize-none text-xs leading-relaxed"
                   />
-                  <p className="text-[10px] text-gray-500">
+                  <p className="text-[11px] text-gray-400">
                     御祭神・ご利益・アクセス情報は、メモが優先されます。メモにない情報は Claude の知識で埋めるため、公開前に確認してください。
                   </p>
                 </div>
@@ -330,7 +338,7 @@ export const AutoEditModal: React.FC<AutoEditModalProps> = ({ isOpen, onClose, p
                   </button>
                 )}
               </div>
-              <p className="text-[10px] text-gray-500 text-center">
+              <p className="text-[11px] text-gray-400 text-center">
                 今のタイムラインは編集結果に置き換わります（Ctrl+Z で元に戻せます）。
               </p>
             </div>
@@ -371,7 +379,7 @@ const AutoEditResult: React.FC<{ summary: AutoEditSummary; onClose: () => void }
       </div>
 
       {(summary.claudeUsed || summary.overTarget || summary.claudeError || summary.warnings.length > 0) && (
-        <div className="bg-amber-950/40 border border-amber-800/60 rounded-lg p-3 text-[11px] text-amber-200 space-y-1.5">
+        <div className="bg-amber-950/40 border border-amber-800/60 rounded-lg p-3 text-xs text-amber-200 space-y-1.5">
           {summary.claudeUsed && (
             <Notice text="御祭神・ご利益・所在地・アクセス情報は Claude が作った下書きです。公開前に、神社の公式情報と照らして必ず確認してください。" />
           )}
@@ -385,7 +393,7 @@ const AutoEditResult: React.FC<{ summary: AutoEditSummary; onClose: () => void }
         </div>
       )}
 
-      <p className="text-[10px] text-gray-500">
+      <p className="text-[11px] text-gray-400">
         BGM を「音声」タブで追加すると、動画の中で話している間は自動で音量が下がります。
       </p>
 

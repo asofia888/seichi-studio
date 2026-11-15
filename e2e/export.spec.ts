@@ -137,7 +137,7 @@ const difference = (a: Frame, b: Frame, fromRow: number, toRow: number) => {
   return pa.reduce((sum, p, i) => sum + Math.abs(p[0] - pb[i][0]) + Math.abs(p[1] - pb[i][1]) + Math.abs(p[2] - pb[i][2]), 0) / pa.length;
 };
 const isRed = ([r, g, b]: number[]) => r > 120 && g < 90 && b < 90;
-const isBlue = ([r, g, b]: number[]) => b > 120 && r < 90;
+const isBlue = ([r, , b]: number[]) => b > 120 && r < 90;
 const isDark = (rgb: number[]) => rgb.every((v) => v < 30);
 const isGreen = ([r, g, b]: number[]) => g > 120 && r < 90 && b < 110;
 const expectColor = (rgb: number[], matches: (rgb: number[]) => boolean, message: string) =>
@@ -319,6 +319,55 @@ test('動画の音は使う部分だけが正しい時刻に入り、60fps で�
   expect(sound.duration).toBeCloseTo(10, 0);
   const [talking, quiet] = sound.levels[0];
   expect(talking, '話している部分が、詰めた後の時刻で聞こえる').toBeGreaterThan(10 * quiet);
+});
+
+test('10秒ずつ作る音声の継ぎ目でも、繰り返しの頭でも、音は途切れない（動画の音・5分を超える音源・繰り返す自然音）', async ({ page, browser }) => {
+  const VIDEO_HZ = 300;
+  const WIND_HZ = 660;
+  // 26 s of footage with a steady tone: on the timeline at 3-29 s, so its sound crosses the joins at 10 and 20 s
+  const [footage] = await makeVideos(browser, [
+    { name: '参道.mp4', seconds: 26, color: '#2e7d32', tone: VIDEO_HZ, recordedAt: '2026-10-01T00:40:00Z' },
+  ]);
+  await startEmptyProject(page, '継ぎ目テスト');
+  await openTab(page, '素材');
+  await page.locator('input[type=file][accept="video/*,image/*"]').setInputFiles(footage);
+  await expect(timeline(page).getByTitle('参道', { exact: true })).toBeVisible();
+
+  // A BGM file longer than five minutes (decoded only where it plays, and at another sample rate),
+  // and a 7 s ambience that starts again at 7, 14, 21 and 28 s
+  await openTab(page, '音声');
+  for (const [button, name, wav] of [
+    [/手持ちのBGM音源/, '長い雅楽', makeWav(BGM_HZ, 302, 0.2, 22050)],
+    [/自然音の音源ファイル/, '風', makeWav(WIND_HZ, 7, 0.2)],
+  ] as const) {
+    const choosing = page.waitForEvent('filechooser');
+    await page.getByRole('button', { name: button }).click();
+    await (await choosing).setFiles({ name: `${name}.wav`, mimeType: 'audio/wav', buffer: wav });
+    await expect(timeline(page).getByTitle(name, { exact: true })).toBeVisible({ timeout: 30_000 });
+  }
+
+  // Not brought to a target loudness, and quiet enough that the limiter has nothing to do
+  const file = await exportVideo(page, /そろえない/);
+  await expect(page.getByText(/書き出しが完了しました/)).toBeVisible();
+
+  // Each tone's level in 50 ms windows (a whole number of cycles of all three) every 25 ms around a
+  // moment: a gap, a repeated or a skipped piece of sound there makes at least one window dip
+  const around = (t: number) => Array.from({ length: 25 }, (_, i): [number, number] => [t - 0.3 + i * 0.025, t - 0.25 + i * 0.025]);
+  const moments = [10, 20, 7, 14, 21];
+  const sound = await toneLevels(page, file.bytes, [VIDEO_HZ, BGM_HZ, WIND_HZ], moments.flatMap(around));
+  expect(sound.duration).toBeCloseTo(29, 0); // 3 s opening + 26 s of footage
+  const steadiness = (tone: number, moment: number) => {
+    const levels = sound.levels[tone].slice(moment * 25, (moment + 1) * 25);
+    const median = [...levels].sort((a, b) => a - b)[12];
+    return { median, lowest: Math.min(...levels) / median };
+  };
+  for (const [tone, name] of [[0, '動画の音'], [1, '5分を超えるBGM'], [2, '繰り返す自然音']] as const) {
+    moments.forEach((seconds, m) => {
+      const { median, lowest } = steadiness(tone, m);
+      expect(median, `${name}が ${seconds} 秒のあたりで鳴っている`).toBeGreaterThan(0.005);
+      expect(lowest, `${name}は ${seconds} 秒のあたりで途切れない`).toBeGreaterThan(0.9);
+    });
+  }
 });
 
 test('4K（3840×2160）で書き出せる', async ({ page }) => {

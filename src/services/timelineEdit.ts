@@ -181,6 +181,69 @@ export function audioEditLimits(track: AudioTrackItem): { earliestHead: number; 
   };
 }
 
+/** What the keyboard can move and resize on the timeline */
+export type TimelineItemKind = 'clip' | 'subtitle' | 'audio';
+
+interface Placed {
+  id: string;
+  startTime: number;
+  duration: number;
+}
+
+/** The item and how far it may go (as when dragging it with the mouse); null when it does not exist */
+function placedItem(project: ProjectData, kind: TimelineItemKind, id: string) {
+  const unlimited = { earliestStart: 0, latestEnd: Infinity, earliestHead: 0, latestTail: Infinity };
+  if (kind === 'clip') {
+    const clip = project.videoClips.find((c) => c.id === id);
+    return clip ? { item: clip as Placed, limits: clipEditLimits(project, clip) } : null;
+  }
+  if (kind === 'audio') {
+    const track = project.audioTracks.find((a) => a.id === id);
+    return track ? { item: track as Placed, limits: { ...unlimited, ...audioEditLimits(track) } } : null;
+  }
+  const subtitle = project.subtitles.find((sub) => sub.id === id);
+  return subtitle ? { item: subtitle as Placed, limits: unlimited } : null;
+}
+
+function withPlacement(project: ProjectData, kind: TimelineItemKind, id: string, placement: { startTime: number; duration: number }): ProjectData {
+  const place = <T extends Placed>(items: T[]) => items.map((item) => (item.id === id ? { ...item, ...placement } : item));
+  if (kind === 'clip') return { ...project, videoClips: place(project.videoClips) };
+  if (kind === 'audio') return { ...project, audioTracks: place(project.audioTracks) };
+  return { ...project, subtitles: place(project.subtitles) };
+}
+
+/**
+ * Move an item `delta` seconds along the timeline, within the same limits as dragging it: not
+ * before the start, not into the clips beside it on its track, and not off the end of the
+ * timeline. Null when it cannot move that way (or does not exist).
+ */
+export function nudgeItem(project: ProjectData, kind: TimelineItemKind, id: string, delta: number): ProjectData | null {
+  const found = placedItem(project, kind, id);
+  if (!found) return null;
+  const { item, limits } = found;
+  const timelineEnd = Math.max(10, project.duration);
+  let startTime = Math.min(timelineEnd - MIN_CLIP_SEC, item.startTime + delta);
+  startTime = Math.max(0, limits.earliestStart, Math.min(limits.latestEnd - item.duration, startTime));
+  startTime = round(startTime);
+  if (startTime === item.startTime) return null;
+  return withPlacement(project, kind, id, { startTime, duration: item.duration });
+}
+
+/**
+ * Make an item `delta` seconds longer (or, negative, shorter) at its end, within the same
+ * limits as dragging its right edge: never shorter than half a second, not into the next clip
+ * on its track, and not past the end of its file. Null when its length cannot change that way.
+ */
+export function resizeItem(project: ProjectData, kind: TimelineItemKind, id: string, delta: number): ProjectData | null {
+  const found = placedItem(project, kind, id);
+  if (!found) return null;
+  const { item, limits } = found;
+  const end = Math.max(item.startTime + MIN_CLIP_SEC, Math.min(limits.latestTail, item.startTime + item.duration + delta));
+  const duration = round(end - item.startTime);
+  if (duration === item.duration) return null;
+  return withPlacement(project, kind, id, { startTime: item.startTime, duration });
+}
+
 /**
  * Move everything that starts at or after `time` by `delta` seconds, closing (negative) or
  * opening up a stretch of the timeline: clips on both tracks, telops, access cards, sounds and

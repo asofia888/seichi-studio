@@ -3,24 +3,22 @@ import { ProjectData, SupportedLanguage } from '../types';
 import { canvasRenderer } from '../services/canvasRenderer';
 import { audioEngine } from '../services/audioEngine';
 import { isOnTitleCard, pictureAt, pictureLayers } from '../services/composition';
+import { usePlayhead } from './usePlayhead';
 import {
   Play,
   Pause,
-  RotateCcw,
   ChevronLeft,
   ChevronRight,
   ChevronsLeft,
   ChevronsRight,
   Mic,
   MicOff,
-  Volume2,
   HelpCircle,
   Activity,
 } from 'lucide-react';
 
 interface VideoPreviewProps {
   project: ProjectData;
-  currentTime: number;
   isPlaying: boolean;
   onTogglePlay: () => void;
   onSeek: (time: number) => void;
@@ -32,7 +30,6 @@ interface VideoPreviewProps {
 
 export const VideoPreview: React.FC<VideoPreviewProps> = ({
   project,
-  currentTime,
   isPlaying,
   onTogglePlay,
   onSeek,
@@ -42,6 +39,8 @@ export const VideoPreview: React.FC<VideoPreviewProps> = ({
   onOpenShortcuts,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  // The preview follows the playhead frame by frame
+  const currentTime = usePlayhead();
 
   // Measured output level (dBFS) of what is actually playing
   const [levels, setLevels] = useState({ left: -Infinity, right: -Infinity, peak: -Infinity });
@@ -146,7 +145,7 @@ export const VideoPreview: React.FC<VideoPreviewProps> = ({
           )}
 
           {/* Aspect ratio watermark */}
-          <div className="absolute top-3 right-3 text-[10px] text-white/40 tracking-wider font-mono bg-black/60 px-2 py-0.5 rounded">
+          <div className="absolute top-3 right-3 text-[11px] text-white/40 tracking-wider font-mono bg-black/60 px-2 py-0.5 rounded">
             {project.aspectRatio} • {isLandscape ? '1920x1080' : '1080x1920'}
           </div>
         </div>
@@ -204,6 +203,7 @@ export const VideoPreview: React.FC<VideoPreviewProps> = ({
         {/* Scrub Bar & Time display */}
         <div className="flex-1 flex items-center space-x-3">
           <input
+            aria-label="再生位置"
             type="range"
             min="0"
             max={project.duration}
@@ -215,12 +215,12 @@ export const VideoPreview: React.FC<VideoPreviewProps> = ({
 
           <div className="font-mono text-xs text-[#aeb5c0] w-28 text-right select-none shrink-0">
             <span className="text-[#F7F6F2] font-semibold">{formatTime(currentTime)}</span>
-            <span className="text-[#64748b]"> / {formatTime(project.duration)}</span>
+            <span className="text-[#94A3B8]"> / {formatTime(project.duration)}</span>
           </div>
         </div>
 
         {/* Real-time Stereo VU Meter */}
-        <div className="hidden sm:flex items-center space-x-1.5 px-2 py-1 bg-[#0b0e14] border border-[#202735] rounded font-mono text-[9px] shrink-0">
+        <div className="hidden sm:flex items-center space-x-1.5 px-2 py-1 bg-[#0b0e14] border border-[#202735] rounded font-mono text-[11px] shrink-0">
           <Activity className="w-3 h-3 text-[#D4AF37]" />
           <div className="flex flex-col space-y-1 w-16">
             {/* L Channel */}
@@ -245,7 +245,7 @@ export const VideoPreview: React.FC<VideoPreviewProps> = ({
             </div>
           </div>
           <span
-            className={`text-[9px] font-mono w-8 text-right ${isClipping ? 'text-red-400 font-bold' : 'text-gray-400'}`}
+            className={`text-[11px] font-mono w-8 text-right ${isClipping ? 'text-red-400 font-bold' : 'text-gray-400'}`}
             title={isClipping ? '音が割れています（ピークが0dBFS付近）。音量を下げてください。' : '出力レベル (dBFS)'}
           >
             {Number.isFinite(loudestDb) && loudestDb > -60 ? `${Math.round(loudestDb)}dB` : '-∞'}

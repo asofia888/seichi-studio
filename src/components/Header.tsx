@@ -2,11 +2,10 @@ import React from 'react';
 import { ProjectData, SupportedLanguage } from '../types';
 import type { ProjectUpdate } from '../services/projectHistory';
 import { exportProjectAsJSON, restoreMediaUrls } from '../services/storage';
+import { normalizeProject } from '../services/projectSchema';
 import { shrinePresets } from '../services/sampleData';
 import { notify } from '../services/notifications';
 import {
-  Sparkles,
-  Download,
   Upload,
   Image as ImageIcon,
   Film,
@@ -17,8 +16,8 @@ import {
   Undo2,
   Redo2,
   Keyboard,
-  Compass,
   WandSparkles,
+  FolderOpen,
 } from 'lucide-react';
 
 interface HeaderProps {
@@ -29,6 +28,7 @@ interface HeaderProps {
   onOpenThumbnailModal: () => void;
   onOpenExportModal: () => void;
   onOpenAutoEditModal: () => void;
+  onOpenProjectsModal: () => void;
   onOpenShortcutsModal?: () => void;
   onUndo?: () => void;
   onRedo?: () => void;
@@ -44,6 +44,7 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenThumbnailModal,
   onOpenExportModal,
   onOpenAutoEditModal,
+  onOpenProjectsModal,
   onOpenShortcutsModal,
   onUndo,
   onRedo,
@@ -71,13 +72,18 @@ export const Header: React.FC<HeaderProps> = ({
       notify('プロジェクトファイルの読み込みに失敗しました。有効なJSONファイルかご確認ください。', 'error');
     reader.onload = (event) => {
       try {
-        const loaded = JSON.parse(event.target?.result as string);
-        if (!loaded || !loaded.title) {
-          failed();
-          return;
-        }
+        // Whatever the file holds, the editor only gets a complete project (or nothing at all)
+        const report = { dropped: 0 };
+        const loaded = normalizeProject(JSON.parse(event.target?.result as string), report);
         // Media files are not inside the JSON; reconnect them from this browser's storage
-        restoreMediaUrls(loaded).then(onUpdateProject).catch(failed);
+        restoreMediaUrls(loaded)
+          .then((project) => {
+            onUpdateProject(project);
+            if (report.dropped > 0) {
+              notify(`ファイルの一部（${report.dropped} 件）は読み取れなかったため、除いて読み込みました。`, 'error');
+            }
+          })
+          .catch(failed);
       } catch {
         failed();
       }
@@ -87,22 +93,22 @@ export const Header: React.FC<HeaderProps> = ({
   };
 
   return (
-    <header className="h-14 bg-[#0e1117] border-b border-[#222934] px-4 flex items-center justify-between z-20 select-none">
-      {/* Brand & Project Title */}
-      <div className="flex items-center space-x-3">
+    <header className="h-14 bg-[#0e1117] border-b border-[#222934] px-4 flex items-center justify-between z-20 select-none whitespace-nowrap">
+      {/* Brand & Project Title: this side gives way when the window is narrow, the buttons do not */}
+      <div className="flex items-center space-x-3 min-w-0 flex-1 mr-3">
         <div className="flex items-center space-x-2 text-[#D4AF37] font-semibold text-base tracking-wider">
           <span className="text-xl">⛩️</span>
-          <span className="font-serif-jp hidden sm:inline">聖地巡礼動画スタジオ</span>
+          <span className="font-serif-jp hidden 2xl:inline">聖地巡礼動画スタジオ</span>
         </div>
 
         <div className="h-5 w-px bg-[#262f3d]" />
 
-        <div className="flex items-center space-x-2">
+        <div className="flex items-center space-x-2 min-w-0 flex-1">
           <input
             type="text"
             value={project.title}
             onChange={handleTitleChange}
-            className="bg-[#151a23] hover:bg-[#1b222d] focus:bg-[#1d2532] text-sm text-[#F7F6F2] font-serif-jp px-3 py-1 rounded border border-[#2c3747] focus:border-[#D4AF37] outline-none transition-all w-52 md:w-72 truncate"
+            className="bg-[#151a23] hover:bg-[#1b222d] focus:bg-[#1d2532] text-sm text-[#F7F6F2] font-serif-jp px-3 py-1 rounded border border-[#2c3747] focus:border-[#D4AF37] outline-none transition-all w-full max-w-72 min-w-24 truncate"
             title="プロジェクト名をクリックして変更"
           />
 
@@ -118,7 +124,7 @@ export const Header: React.FC<HeaderProps> = ({
               e.target.value = '';
             }}
             defaultValue=""
-            className="hidden lg:block bg-[#151a23] hover:bg-[#1c2432] text-xs text-[#E8D595] border border-[#2c3747] rounded px-2 py-1 outline-none cursor-pointer max-w-[150px] truncate"
+            className="hidden min-[1400px]:block shrink-0 bg-[#151a23] hover:bg-[#1c2432] text-xs text-[#E8D595] border border-[#2c3747] rounded px-2 py-1 outline-none cursor-pointer max-w-[150px] truncate"
             title="神社・聖地プリセットを読み込み"
           >
             <option value="" disabled>聖地プリセット読込</option>
@@ -132,7 +138,7 @@ export const Header: React.FC<HeaderProps> = ({
       </div>
 
       {/* Control Actions */}
-      <div className="flex items-center space-x-2">
+      <div className="flex items-center space-x-2 shrink-0">
         {/* 16:9 vs 9:16 Ratio Switcher */}
         <button
           onClick={handleToggleAspectRatio}
@@ -190,15 +196,25 @@ export const Header: React.FC<HeaderProps> = ({
           </button>
         </div>
 
+        {/* Projects kept in this browser, and backups with their media */}
+        <button
+          onClick={onOpenProjectsModal}
+          className="flex items-center space-x-1 px-2.5 py-1 text-xs text-[#c9cbcf] hover:text-white bg-[#151a23] hover:bg-[#202734] border border-[#2c3747] rounded transition-colors"
+          title="プロジェクトの切り替え・新規作成・素材ごとのバックアップ"
+        >
+          <FolderOpen className="w-3.5 h-3.5 text-[#D4AF37]" />
+          <span className="hidden md:inline">プロジェクト</span>
+        </button>
+
         {/* Project JSON Save/Load */}
         <div className="flex items-center space-x-1">
           <button
             onClick={handleSaveJson}
             className="flex items-center space-x-1 px-2.5 py-1 text-xs text-[#c9cbcf] hover:text-white bg-[#151a23] hover:bg-[#202734] border border-[#2c3747] rounded transition-colors"
-            title="プロジェクト保存 (JSONファイル書き出し)"
+            title="編集内容だけを JSON ファイルに保存（写真・動画・音声は含まれません。素材ごと残すには「プロジェクト」→「バックアップ」）"
           >
             <Save className="w-3.5 h-3.5 text-[#A0AEC0]" />
-            <span className="hidden md:inline">保存</span>
+            <span className="hidden lg:inline">保存</span>
           </button>
 
           <label
@@ -206,8 +222,8 @@ export const Header: React.FC<HeaderProps> = ({
             title="プロジェクト再開 (JSONファイル読み込み)"
           >
             <Upload className="w-3.5 h-3.5 text-[#A0AEC0]" />
-            <span className="hidden md:inline">読込</span>
-            <input type="file" accept=".json" onChange={handleLoadJson} className="hidden" />
+            <span className="hidden lg:inline">読込</span>
+            <input aria-label="プロジェクトファイル（JSON）" type="file" accept=".json" onChange={handleLoadJson} className="hidden" />
           </label>
         </div>
 

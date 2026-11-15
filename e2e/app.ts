@@ -24,13 +24,21 @@ export const timeline = (page: Page) => page.getByRole('region', { name: 'タイ
 export const undoButton = (page: Page) => page.getByRole('button', { name: '元に戻す' });
 export const redoButton = (page: Page) => page.getByRole('button', { name: 'やり直す' });
 
+/** Open the project list (header's プロジェクト button) and return the dialog */
+export async function openProjects(page: Page) {
+  await page.getByRole('button', { name: 'プロジェクト', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'プロジェクト' });
+  await expect(dialog).toBeVisible();
+  return dialog;
+}
+
 /** Open the app and wait until the saved project (if any) has been restored */
 export async function openApp(page: Page, expectedTitle?: string | RegExp) {
   await page.goto('/');
   await expect(titleInput(page)).toHaveValue(expectedTitle ?? /.+/);
 }
 
-/** The project as the app last saved it in the browser (null before the first save) */
+/** The project being edited, as the app last saved it in the browser (null before the first save) */
 export async function savedProject(page: Page): Promise<ProjectData | null> {
   return page.evaluate(
     () =>
@@ -41,12 +49,18 @@ export async function savedProject(page: Page): Promise<ProjectData | null> {
         request.onerror = () => resolve(null);
         request.onsuccess = () => {
           const db = request.result;
-          const get = db.transaction('projects', 'readonly').objectStore('projects').get('last_project');
-          get.onsuccess = () => {
-            db.close();
-            resolve(get.result ?? null);
+          // Projects are kept side by side; the current one is the one the app opens at startup
+          const store = db.transaction('projects', 'readonly').objectStore('projects');
+          const slot = store.get('current_project_slot');
+          slot.onerror = () => reject(slot.error);
+          slot.onsuccess = () => {
+            const get = store.get(`project:${slot.result}`);
+            get.onsuccess = () => {
+              db.close();
+              resolve(get.result ?? null);
+            };
+            get.onerror = () => reject(get.error);
           };
-          get.onerror = () => reject(get.error);
         };
       })
   );

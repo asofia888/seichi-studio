@@ -5,6 +5,8 @@ import { WaveformVisualizer } from './WaveformVisualizer';
 import { isNarrationAudibleAt } from '../services/audioEngine';
 import { clipSpeed, isOverlayClip } from '../services/composition';
 import { audioEditLimits, clipEditLimits } from '../services/timelineEdit';
+import { getPlayhead } from '../services/playhead';
+import { usePlayhead } from './usePlayhead';
 import { VideoClipItem } from '../types';
 import {
   Film,
@@ -12,10 +14,8 @@ import {
   Mic,
   Music,
   Wind,
-  Plus,
   Trash2,
   MapPin,
-  Sparkles,
   Scissors,
   Magnet,
   ZoomIn,
@@ -30,7 +30,6 @@ import {
 interface TimelineProps {
   project: ProjectData;
   onUpdateProject: (update: ProjectUpdate) => void;
-  currentTime: number;
   onSeek: (time: number) => void;
   onSelectTrackItem: (type: string, id: string) => void;
   selectedItemId: string | null;
@@ -56,10 +55,22 @@ interface DragState {
 
 const TRANSITION_LABELS = { dissolve: 'ディゾルブ', fade_black: '黒フェード', fade_white: '白フェード' } as const;
 
+/** The red line at the playhead. On its own, so the timeline around it is not redrawn as it moves. */
+const PlayheadLine: React.FC<{ duration: number }> = ({ duration }) => {
+  const percent = usePlayhead((time) => (time / duration) * 100);
+  return (
+    <div
+      className="absolute top-0 bottom-0 w-0.5 bg-[#C84B31] pointer-events-none z-30 shadow-lg"
+      style={{ left: `${percent}%` }}
+    >
+      <div className="w-3 h-3 -ml-[5px] -mt-1 bg-[#C84B31] rotate-45 rounded-sm shadow-md" />
+    </div>
+  );
+};
+
 export const Timeline: React.FC<TimelineProps> = ({
   project,
   onUpdateProject,
-  currentTime,
   onSeek,
   onSelectTrackItem,
   selectedItemId,
@@ -82,6 +93,12 @@ export const Timeline: React.FC<TimelineProps> = ({
 
   // Muted tracks state helper
   const mutedTracks = project.mutedTracks || {};
+
+  // Whether someone is speaking at the playhead (the BGM shows that it is turned down).
+  // The timeline is redrawn when this flips, not on every frame of playback.
+  const isNarrationNow = usePlayhead((time) =>
+    isNarrationAudibleAt(project.audioTracks, project.videoClips, time, project.mutedTracks)
+  );
 
   const handleToggleMute = (trackKey: 'video' | 'subtitles' | 'narration' | 'ambience' | 'bgm') => {
     const updatedMuted = {
@@ -121,7 +138,7 @@ export const Timeline: React.FC<TimelineProps> = ({
 
   // Collect potential snap points (playhead, 0, start/end of all clips)
   const getSnapPoints = (excludeId?: string): number[] => {
-    const points = [0, currentTime, duration];
+    const points = [0, getPlayhead(), duration];
     project.videoClips.forEach((c) => {
       if (c.id !== excludeId) {
         points.push(c.startTime, c.startTime + c.duration);
@@ -194,6 +211,24 @@ export const Timeline: React.FC<TimelineProps> = ({
       duration: initialDuration,
     });
   };
+
+  // What makes a timeline item reachable without a mouse: Tab stops on it, a screen reader says
+  // what it is, and Enter (or Space) selects it. Once selected, Alt + arrow keys move it and
+  // Alt + Shift + arrow keys change its length (handled with the other shortcuts in App).
+  const itemProps = (itemType: DragState['itemType'], itemId: string, kind: string, name: string, start: number, length: number) => ({
+    role: 'button' as const,
+    tabIndex: 0,
+    'aria-label': `${kind}「${name}」 ${start.toFixed(1)}秒から${length.toFixed(1)}秒間`,
+    'aria-pressed': selectedItemId === itemId,
+    onKeyDown: (e: React.KeyboardEvent<HTMLElement>) => {
+      if (e.target !== e.currentTarget) return;
+      if (e.key === 'Enter' || (e.key === ' ' && e.currentTarget.matches(':focus-visible'))) {
+        e.preventDefault();
+        e.stopPropagation();
+        onSelectTrackItem(itemType, itemId);
+      }
+    },
+  });
 
   // Global mousemove and mouseup listeners for drag and trim operations
   useEffect(() => {
@@ -325,7 +360,8 @@ export const Timeline: React.FC<TimelineProps> = ({
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [dragState, ghostPreview, duration, project, snapEnabled]);
+    // oxlint-disable-next-line react-hooks/exhaustive-deps -- applySnap is rebuilt on every render from snapEnabled and project, which are listed
+  }, [dragState, ghostPreview, duration, project, snapEnabled, onUpdateProject]);
 
   // One video/photo clip on the main track or the B-roll track
   const renderVideoClip = (clip: VideoClipItem) => {
@@ -343,7 +379,8 @@ export const Timeline: React.FC<TimelineProps> = ({
       <div
         key={clip.id}
         onMouseDown={(e) => startDrag(e, 'clip', clip.id, 'move', clip.startTime, clip.duration, clip.trimStart)}
-        className={`group absolute h-9 rounded px-2 flex items-center justify-between text-[11px] truncate border cursor-move transition-all ${
+        {...itemProps('clip', clip.id, isOverlayClip(clip) ? 'Bロール' : clip.type === 'video' ? '動画' : '写真', clip.name, clip.startTime, clip.duration)}
+        className={`group absolute h-9 rounded px-2 flex items-center justify-between text-xs truncate border cursor-move transition-all ${
           overlay ? 'bg-[#1e1b4b] border-[#6366F1] text-[#C7D2FE]' : 'bg-[#162942] border-[#2563EB] text-[#BFDBFE]'
         } ${isSelected ? 'ring-2 ring-white shadow-xl z-20 brightness-110' : 'hover:brightness-125'}`}
         style={{
@@ -374,13 +411,13 @@ export const Timeline: React.FC<TimelineProps> = ({
           {overlay ? <Layers className="w-3 h-3 mr-1 inline shrink-0" /> : <Film className="w-3 h-3 mr-1 inline shrink-0" />}
           <span className="truncate">{clip.name}</span>
           {clip.kenBurns?.enabled && clip.type === 'image' && (
-            <span className="text-[9px] bg-blue-500/30 text-blue-200 px-1 rounded ml-1 shrink-0">KB</span>
+            <span className="text-[11px] bg-blue-500/30 text-blue-200 px-1 rounded ml-1 shrink-0">KB</span>
           )}
           {speed !== 1 && (
-            <span className="text-[9px] bg-amber-500/30 text-amber-200 px-1 rounded ml-1 shrink-0 font-mono">{speed}x</span>
+            <span className="text-[11px] bg-amber-500/30 text-amber-200 px-1 rounded ml-1 shrink-0 font-mono">{speed}x</span>
           )}
           {isColorCorrected && (
-            <span className="text-[9px] bg-pink-500/30 text-pink-200 px-1 rounded ml-1 shrink-0">色</span>
+            <span className="text-[11px] bg-pink-500/30 text-pink-200 px-1 rounded ml-1 shrink-0">色</span>
           )}
         </span>
 
@@ -416,7 +453,7 @@ export const Timeline: React.FC<TimelineProps> = ({
           {/* Split at playhead button */}
           <button
             onClick={onSplitAtPlayhead}
-            className="flex items-center space-x-1 px-2.5 py-0.5 bg-[#1b2332] hover:bg-[#253248] text-[#E2E8F0] border border-[#2f3d54] rounded text-[11px] transition-colors"
+            className="flex items-center space-x-1 px-2.5 py-0.5 bg-[#1b2332] hover:bg-[#253248] text-[#E2E8F0] border border-[#2f3d54] rounded text-xs transition-colors"
             title="再生ヘッド位置で選択クリップを分割 (ショートカット: S)"
           >
             <Scissors className="w-3 h-3 text-[#D4AF37]" />
@@ -435,7 +472,7 @@ export const Timeline: React.FC<TimelineProps> = ({
                   onDeleteAudio(selectedItemId);
                 }
               }}
-              className="flex items-center space-x-1 px-2 py-0.5 bg-red-950/60 hover:bg-red-900/80 text-red-200 border border-red-800/60 rounded text-[11px] transition-colors"
+              className="flex items-center space-x-1 px-2 py-0.5 bg-red-950/60 hover:bg-red-900/80 text-red-200 border border-red-800/60 rounded text-xs transition-colors"
               title="選択中のアイテムを削除 (Delete / Backspace)"
             >
               <Trash2 className="w-3 h-3 text-red-400" />
@@ -446,7 +483,8 @@ export const Timeline: React.FC<TimelineProps> = ({
           {/* Snap toggle */}
           <button
             onClick={() => setSnapEnabled(!snapEnabled)}
-            className={`flex items-center space-x-1 px-2 py-0.5 rounded text-[11px] border transition-colors ${
+            aria-pressed={snapEnabled}
+            className={`flex items-center space-x-1 px-2 py-0.5 rounded text-xs border transition-colors ${
               snapEnabled
                 ? 'bg-amber-950/70 border-amber-600/70 text-amber-300'
                 : 'bg-[#1b2332] border-[#2f3d54] text-gray-400'
@@ -459,24 +497,36 @@ export const Timeline: React.FC<TimelineProps> = ({
         </div>
 
         {/* Right: Zoom controls and Legend */}
-        <div className="flex items-center space-x-4 text-[11px]">
+        <div className="flex items-center space-x-4 text-xs">
           {/* Zoom controls */}
           <div className="flex items-center space-x-1.5 bg-[#171e2b] px-2 py-0.5 rounded border border-[#253042]">
-            <ZoomOut
-              className="w-3 h-3 text-gray-400 hover:text-white cursor-pointer"
+            <button
               onClick={() => setZoomLevel((z) => Math.max(1.0, z - 0.5))}
-            />
-            <span className="font-mono text-[10px] text-gray-300 w-8 text-center">{zoomLevel.toFixed(1)}x</span>
-            <ZoomIn
-              className="w-3 h-3 text-gray-400 hover:text-white cursor-pointer"
+              disabled={zoomLevel <= 1.0}
+              className="text-gray-400 hover:text-white disabled:opacity-40"
+              title="タイムラインを縮小"
+              aria-label="タイムラインを縮小"
+            >
+              <ZoomOut className="w-3 h-3" aria-hidden="true" />
+            </button>
+            <span className="font-mono text-[11px] text-gray-300 w-8 text-center" aria-label={`表示倍率 ${zoomLevel.toFixed(1)}倍`}>
+              {zoomLevel.toFixed(1)}x
+            </span>
+            <button
               onClick={() => setZoomLevel((z) => Math.min(3.5, z + 0.5))}
-            />
+              disabled={zoomLevel >= 3.5}
+              className="text-gray-400 hover:text-white disabled:opacity-40"
+              title="タイムラインを拡大"
+              aria-label="タイムラインを拡大"
+            >
+              <ZoomIn className="w-3 h-3" aria-hidden="true" />
+            </button>
           </div>
 
           <div className="h-4 w-px bg-[#262f3f]" />
 
           {/* Legend */}
-          <div className="hidden lg:flex items-center space-x-3 text-[10px]">
+          <div className="hidden lg:flex items-center space-x-3 text-[11px]">
             <span className="flex items-center space-x-1">
               <span className="w-2 h-2 bg-[#D4AF37] rounded-sm inline-block" />
               <span>テロップ</span>
@@ -504,7 +554,7 @@ export const Timeline: React.FC<TimelineProps> = ({
         {/* Track Headers (Left sidebar with Mute & Solo icons) */}
         <div className="w-40 bg-[#0f131b] border-r border-[#1f2634] flex flex-col text-xs text-[#9aa0a6] shrink-0 font-medium">
           {/* Header ruler label */}
-          <div className="h-6 border-b border-[#1b222d] px-2.5 flex items-center justify-between text-[10px] text-gray-500 font-mono">
+          <div className="h-6 border-b border-[#1b222d] px-2.5 flex items-center justify-between text-[11px] text-gray-400 font-mono">
             <span>トラック</span>
             <span>操作</span>
           </div>
@@ -513,10 +563,12 @@ export const Timeline: React.FC<TimelineProps> = ({
           <div className="h-11 border-b border-[#1b222d] px-2 flex items-center justify-between text-[#E8D595]">
             <div className="flex items-center space-x-1.5 truncate">
               <Type className="w-3.5 h-3.5 text-[#D4AF37] shrink-0" />
-              <span className="truncate text-[11px]">テロップ/案内</span>
+              <span className="truncate text-xs">テロップ/案内</span>
             </div>
             <button
               onClick={() => handleToggleMute('subtitles')}
+              aria-pressed={!!mutedTracks.subtitles}
+              aria-label="テロップを非表示"
               className={`p-1 rounded hover:bg-[#1a2332] transition-colors ${
                 mutedTracks.subtitles ? 'text-red-400' : 'text-gray-400 hover:text-white'
               }`}
@@ -530,7 +582,7 @@ export const Timeline: React.FC<TimelineProps> = ({
           <div className="h-11 border-b border-[#1b222d] px-2 flex items-center text-[#A5B4FC]" title="本編の上に重ねる映像（Bロール）。本編の音声はそのまま聞こえます">
             <div className="flex items-center space-x-1.5 truncate">
               <Layers className="w-3.5 h-3.5 text-[#818CF8] shrink-0" />
-              <span className="truncate text-[11px]">Bロール（重ねる）</span>
+              <span className="truncate text-xs">Bロール（重ねる）</span>
             </div>
           </div>
 
@@ -538,10 +590,12 @@ export const Timeline: React.FC<TimelineProps> = ({
           <div className="h-11 border-b border-[#1b222d] px-2 flex items-center justify-between text-[#93C5FD]">
             <div className="flex items-center space-x-1.5 truncate">
               <Film className="w-3.5 h-3.5 text-[#3B82F6] shrink-0" />
-              <span className="truncate text-[11px]">映像・写真</span>
+              <span className="truncate text-xs">映像・写真</span>
             </div>
             <button
               onClick={() => handleToggleMute('video')}
+              aria-pressed={!!mutedTracks.video}
+              aria-label="映像を非表示"
               className={`p-1 rounded hover:bg-[#1a2332] transition-colors ${
                 mutedTracks.video ? 'text-red-400' : 'text-gray-400 hover:text-white'
               }`}
@@ -555,10 +609,12 @@ export const Timeline: React.FC<TimelineProps> = ({
           <div className="h-11 border-b border-[#1b222d] px-2 flex items-center justify-between text-[#FCA5A5]">
             <div className="flex items-center space-x-1.5 truncate">
               <Mic className="w-3.5 h-3.5 text-[#EF4444] shrink-0" />
-              <span className="truncate text-[11px]">ナレーション</span>
+              <span className="truncate text-xs">ナレーション</span>
             </div>
             <button
               onClick={() => handleToggleMute('narration')}
+              aria-pressed={!!mutedTracks.narration}
+              aria-label="ナレーションをミュート"
               className={`p-1 rounded hover:bg-[#1a2332] transition-colors ${
                 mutedTracks.narration ? 'text-red-400' : 'text-gray-400 hover:text-white'
               }`}
@@ -572,10 +628,12 @@ export const Timeline: React.FC<TimelineProps> = ({
           <div className="h-11 border-b border-[#1b222d] px-2 flex items-center justify-between text-[#A7F3D0]">
             <div className="flex items-center space-x-1.5 truncate">
               <Wind className="w-3.5 h-3.5 text-[#10B981] shrink-0" />
-              <span className="truncate text-[11px]">自然・環境音</span>
+              <span className="truncate text-xs">自然・環境音</span>
             </div>
             <button
               onClick={() => handleToggleMute('ambience')}
+              aria-pressed={!!mutedTracks.ambience}
+              aria-label="環境音をミュート"
               className={`p-1 rounded hover:bg-[#1a2332] transition-colors ${
                 mutedTracks.ambience ? 'text-red-400' : 'text-gray-400 hover:text-white'
               }`}
@@ -589,10 +647,12 @@ export const Timeline: React.FC<TimelineProps> = ({
           <div className="h-11 px-2 flex items-center justify-between text-[#DDD6FE]">
             <div className="flex items-center space-x-1.5 truncate">
               <Music className="w-3.5 h-3.5 text-[#8B5CF6] shrink-0" />
-              <span className="truncate text-[11px]">雅楽・BGM</span>
+              <span className="truncate text-xs">雅楽・BGM</span>
             </div>
             <button
               onClick={() => handleToggleMute('bgm')}
+              aria-pressed={!!mutedTracks.bgm}
+              aria-label="BGMをミュート"
               className={`p-1 rounded hover:bg-[#1a2332] transition-colors ${
                 mutedTracks.bgm ? 'text-red-400' : 'text-gray-400 hover:text-white'
               }`}
@@ -619,7 +679,7 @@ export const Timeline: React.FC<TimelineProps> = ({
               {ticks.map((t) => (
                 <div
                   key={t}
-                  className="absolute top-0 bottom-0 border-l border-[#283243] flex items-center pl-1 text-[9px] text-[#718096] font-mono select-none"
+                  className="absolute top-0 bottom-0 border-l border-[#283243] flex items-center pl-1 text-[11px] text-[#94A3B8] font-mono select-none"
                   style={{ left: `${getPositionPercent(t)}%` }}
                 >
                   {Math.floor(t)}s
@@ -632,7 +692,7 @@ export const Timeline: React.FC<TimelineProps> = ({
               {/* Opening Tag */}
               {project.branding.opDuration > 0 && (
                 <div
-                  className="absolute h-9 bg-amber-950/70 border border-amber-600/70 rounded px-1.5 flex items-center text-[10px] text-amber-200 overflow-hidden select-none"
+                  className="absolute h-9 bg-amber-950/70 border border-amber-600/70 rounded px-1.5 flex items-center text-[11px] text-amber-200 overflow-hidden select-none"
                   style={{
                     left: '0%',
                     width: `${getWidthPercent(project.branding.opDuration)}%`,
@@ -653,7 +713,8 @@ export const Timeline: React.FC<TimelineProps> = ({
                   <div
                     key={sub.id}
                     onMouseDown={(e) => startDrag(e, 'subtitle', sub.id, 'move', sub.startTime, sub.duration)}
-                    className={`group absolute h-9 rounded px-2 flex items-center justify-between text-[11px] truncate cursor-move transition-all border ${
+                    {...itemProps('subtitle', sub.id, 'テロップ', sub.text.ja, sub.startTime, sub.duration)}
+                    className={`group absolute h-9 rounded px-2 flex items-center justify-between text-xs truncate cursor-move transition-all border ${
                       sub.category === 'sanctuary_header'
                         ? 'bg-[#291e12] border-[#D4AF37] text-[#F7E7B4]'
                         : sub.category === 'etiquette_tip'
@@ -700,7 +761,8 @@ export const Timeline: React.FC<TimelineProps> = ({
                   <div
                     key={acc.id}
                     onMouseDown={(e) => startDrag(e, 'access', acc.id, 'move', acc.startTime, acc.duration)}
-                    className={`group absolute h-9 rounded px-2 flex items-center text-[11px] truncate bg-[#1a2d24] border border-[#22c55e] text-[#86efac] cursor-move ${
+                    {...itemProps('access', acc.id, 'アクセス案内', acc.sanctuaryName.ja, acc.startTime, acc.duration)}
+                    className={`group absolute h-9 rounded px-2 flex items-center text-xs truncate bg-[#1a2d24] border border-[#22c55e] text-[#86efac] cursor-move ${
                       isSelected ? 'ring-2 ring-white shadow-xl z-20' : 'hover:brightness-125'
                     }`}
                     style={{
@@ -731,7 +793,7 @@ export const Timeline: React.FC<TimelineProps> = ({
               {/* Ending Tag */}
               {project.branding.edDuration > 0 && (
                 <div
-                  className="absolute h-9 bg-amber-950/70 border border-amber-600/70 rounded px-1.5 flex items-center text-[10px] text-amber-200 overflow-hidden select-none"
+                  className="absolute h-9 bg-amber-950/70 border border-amber-600/70 rounded px-1.5 flex items-center text-[11px] text-amber-200 overflow-hidden select-none"
                   style={{
                     left: `${getPositionPercent(project.duration - project.branding.edDuration)}%`,
                     width: `${getWidthPercent(project.branding.edDuration)}%`,
@@ -767,7 +829,8 @@ export const Timeline: React.FC<TimelineProps> = ({
                       key={audio.id}
                       title={audio.name}
                       onMouseDown={(e) => startDrag(e, 'audio', audio.id, 'move', audio.startTime, audio.duration, audio.trimStart)}
-                      className={`group absolute h-9 rounded px-2 flex items-center justify-between text-[11px] bg-red-950/80 border border-red-500 text-red-100 truncate cursor-move transition-all overflow-hidden ${
+                      {...itemProps('audio', audio.id, audio.type === 'narration' ? 'ナレーション' : audio.type === 'bgm' ? 'BGM' : '環境音', audio.name, audio.startTime, audio.duration)}
+                      className={`group absolute h-9 rounded px-2 flex items-center justify-between text-xs bg-red-950/80 border border-red-500 text-red-100 truncate cursor-move transition-all overflow-hidden ${
                         isSelected ? 'ring-2 ring-[#D4AF37] border-[#D4AF37] shadow-xl z-20 brightness-110' : 'hover:brightness-125'
                       }`}
                       style={{
@@ -796,7 +859,7 @@ export const Timeline: React.FC<TimelineProps> = ({
                         <Mic className="w-3 h-3 mr-1 shrink-0 text-red-300" />
                         <span className="truncate">{audio.name}{!audio.dataUrl && '（音声なし）'}</span>
                       </div>
-                      <span className="relative z-10 text-[9px] bg-black/70 px-1 rounded text-red-200 font-mono shrink-0 ml-1">
+                      <span className="relative z-10 text-[11px] bg-black/70 px-1 rounded text-red-200 font-mono shrink-0 ml-1">
                         {Math.round(audio.volume * 100)}%
                       </span>
 
@@ -827,7 +890,8 @@ export const Timeline: React.FC<TimelineProps> = ({
                       key={audio.id}
                       title={audio.name}
                       onMouseDown={(e) => startDrag(e, 'audio', audio.id, 'move', audio.startTime, audio.duration, audio.trimStart)}
-                      className={`group absolute h-9 rounded px-2 flex items-center justify-between text-[11px] bg-emerald-950/70 border border-emerald-600/70 text-emerald-100 truncate cursor-move overflow-hidden ${
+                      {...itemProps('audio', audio.id, audio.type === 'narration' ? 'ナレーション' : audio.type === 'bgm' ? 'BGM' : '環境音', audio.name, audio.startTime, audio.duration)}
+                      className={`group absolute h-9 rounded px-2 flex items-center justify-between text-xs bg-emerald-950/70 border border-emerald-600/70 text-emerald-100 truncate cursor-move overflow-hidden ${
                         isSelected ? 'ring-2 ring-[#D4AF37] border-[#D4AF37] shadow-xl z-20 brightness-110' : 'hover:brightness-125'
                       }`}
                       style={{
@@ -855,7 +919,7 @@ export const Timeline: React.FC<TimelineProps> = ({
                         <Wind className="w-3 h-3 mr-1 shrink-0 text-emerald-300" />
                         <span className="truncate">{audio.name}{!audio.dataUrl && '（音声なし）'}</span>
                       </div>
-                      <span className="relative z-10 text-[9px] bg-black/70 px-1 rounded text-emerald-200 font-mono shrink-0 ml-1">
+                      <span className="relative z-10 text-[11px] bg-black/70 px-1 rounded text-emerald-200 font-mono shrink-0 ml-1">
                         {Math.round(audio.volume * 100)}%
                       </span>
 
@@ -880,14 +944,13 @@ export const Timeline: React.FC<TimelineProps> = ({
                   const displayStart = isBeingDragged && ghostPreview ? ghostPreview.startTime : audio.startTime;
                   const displayDur = isBeingDragged && ghostPreview ? ghostPreview.duration : audio.duration;
 
-                  const isNarrationNow = isNarrationAudibleAt(project.audioTracks, project.videoClips, currentTime, mutedTracks);
-
                   return (
                     <div
                       key={audio.id}
                       title={audio.name}
                       onMouseDown={(e) => startDrag(e, 'audio', audio.id, 'move', audio.startTime, audio.duration, audio.trimStart)}
-                      className={`group absolute h-9 rounded px-2 flex items-center justify-between text-[11px] bg-indigo-950/70 border border-indigo-500/70 text-indigo-100 truncate cursor-move overflow-hidden ${
+                      {...itemProps('audio', audio.id, audio.type === 'narration' ? 'ナレーション' : audio.type === 'bgm' ? 'BGM' : '環境音', audio.name, audio.startTime, audio.duration)}
+                      className={`group absolute h-9 rounded px-2 flex items-center justify-between text-xs bg-indigo-950/70 border border-indigo-500/70 text-indigo-100 truncate cursor-move overflow-hidden ${
                         isSelected ? 'ring-2 ring-[#D4AF37] border-[#D4AF37] shadow-xl z-20 brightness-110' : 'hover:brightness-125'
                       }`}
                       style={{
@@ -921,7 +984,7 @@ export const Timeline: React.FC<TimelineProps> = ({
                       <div className="relative z-10 flex items-center space-x-1 shrink-0 ml-1">
                         {audio.autoDucking?.enabled && (
                           <span
-                            className={`text-[9px] px-1 rounded transition-colors ${
+                            className={`text-[11px] px-1 rounded transition-colors ${
                               isNarrationNow
                                 ? 'bg-amber-500 text-black font-bold animate-pulse'
                                 : 'bg-amber-400/20 text-amber-300 border border-amber-400/40'
@@ -930,7 +993,7 @@ export const Timeline: React.FC<TimelineProps> = ({
                             {isNarrationNow ? '減衰中' : 'ダッキング'}
                           </span>
                         )}
-                        <span className="text-[9px] bg-black/70 px-1 rounded text-indigo-200 font-mono">
+                        <span className="text-[11px] bg-black/70 px-1 rounded text-indigo-200 font-mono">
                           {Math.round(audio.volume * 100)}%
                         </span>
                       </div>
@@ -946,13 +1009,7 @@ export const Timeline: React.FC<TimelineProps> = ({
                 })}
             </div>
 
-            {/* Playhead Red Indicator Line */}
-            <div
-              className="absolute top-0 bottom-0 w-0.5 bg-[#C84B31] pointer-events-none z-30 shadow-lg"
-              style={{ left: `${getPositionPercent(currentTime)}%` }}
-            >
-              <div className="w-3 h-3 -ml-[5px] -mt-1 bg-[#C84B31] rotate-45 rounded-sm shadow-md" />
-            </div>
+            <PlayheadLine duration={duration} />
           </div>
         </div>
       </div>

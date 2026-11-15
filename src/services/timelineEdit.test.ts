@@ -4,7 +4,9 @@ import {
   fitDurationToContent,
   moveClipInOrder,
   moveClipToTrack,
+  nudgeItem,
   openOverlaySpan,
+  resizeItem,
   rippleDeleteClip,
   setClipSpeed,
   splitItemAtTime,
@@ -221,5 +223,63 @@ describe('editing clips on a track', () => {
     const p = splitItemAtTime({ ...timeline, videoClips: [vid('S', 3, 6, { speed: 2, transition: { type: 'dissolve', duration: 1 } })] }, 'S', 5)!;
     expect(p.videoClips[1]).toMatchObject({ startTime: 5, trimStart: 6, transition: undefined });
     expect(p.videoClips[0].transition).toEqual({ type: 'dissolve', duration: 1 });
+  });
+});
+
+describe('nudgeItem / resizeItem (moving and resizing with the keyboard)', () => {
+  const photo = (id: string, startTime: number, duration: number): VideoClipItem => ({
+    id,
+    name: id,
+    type: 'image',
+    startTime,
+    duration,
+    trimStart: 0,
+    trimEnd: duration,
+  });
+  // A 3-8 s, a gap, B 9-14 s
+  const project = makeProject({
+    duration: 20,
+    videoClips: [photo('A', 3, 5), photo('B', 9, 5)],
+    subtitles: [subtitle],
+    audioTracks: [{ ...narration, startTime: 2, duration: 4, trimStart: 1, sourceDuration: 6 }],
+  });
+  const clipA = (p: ReturnType<typeof nudgeItem>) => p!.videoClips.find((c) => c.id === 'A')!;
+
+  it('moves an item by the step, leaving everything else alone', () => {
+    const moved = nudgeItem(project, 'subtitle', 'sub1', 0.1)!;
+    expect(moved.subtitles[0]).toMatchObject({ startTime: 4.1, duration: 6 });
+    expect(moved.videoClips).toBe(project.videoClips);
+    expect(nudgeItem(project, 'audio', 'audio1', -0.1)!.audioTracks[0].startTime).toBe(1.9);
+  });
+
+  it('stops a clip at the clip beside it and at the start of the timeline', () => {
+    expect(clipA(nudgeItem(project, 'clip', 'A', 0.6)).startTime).toBe(3.6);
+    expect(clipA(nudgeItem(project, 'clip', 'A', 5)).startTime, 'up against B').toBe(4);
+    expect(clipA(nudgeItem(project, 'clip', 'A', -10)).startTime).toBe(0);
+    const touching = nudgeItem(project, 'clip', 'A', 5)!;
+    expect(nudgeItem(touching, 'clip', 'A', 0.1), 'nowhere to go').toBeNull();
+    expect(nudgeItem({ ...project, subtitles: [{ ...subtitle, startTime: 0 }] }, 'subtitle', 'sub1', -0.1)).toBeNull();
+  });
+
+  it('keeps an item on the timeline', () => {
+    expect(nudgeItem(project, 'subtitle', 'sub1', 100)!.subtitles[0].startTime).toBe(19.5);
+  });
+
+  it('makes an item longer or shorter at its end, never shorter than half a second', () => {
+    expect(resizeItem(project, 'subtitle', 'sub1', 0.1)!.subtitles[0]).toMatchObject({ startTime: 4, duration: 6.1 });
+    expect(resizeItem(project, 'subtitle', 'sub1', -100)!.subtitles[0].duration).toBe(0.5);
+    const shortest = resizeItem(project, 'subtitle', 'sub1', -100)!;
+    expect(resizeItem(shortest, 'subtitle', 'sub1', -0.1)).toBeNull();
+  });
+
+  it('does not grow a clip into the next one, or a sound past the end of its file', () => {
+    expect(clipA(resizeItem(project, 'clip', 'A', 3)).duration, 'up to where B starts').toBe(6);
+    // The file is 6 s and the first second is trimmed off: 5 s can be heard
+    expect(resizeItem(project, 'audio', 'audio1', 3)!.audioTracks[0].duration).toBe(5);
+  });
+
+  it('is null for an item that does not exist', () => {
+    expect(nudgeItem(project, 'clip', 'nobody', 1)).toBeNull();
+    expect(resizeItem(project, 'audio', 'nobody', 1)).toBeNull();
   });
 });

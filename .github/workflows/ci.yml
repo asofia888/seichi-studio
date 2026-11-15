@@ -1,0 +1,57 @@
+# Runs on every push to main and on every pull request: the same checks as on a developer's PC.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A newer push to the same branch replaces the run that is still going
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: 型チェック・リント・テスト・ビルド
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: 型チェックとリント
+        run: npm run lint
+      - name: 自動テスト
+        run: npm test
+      - name: ビルド
+        run: npm run build
+
+  e2e:
+    name: ブラウザテスト
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: テスト用のブラウザを入れる
+        run: npx playwright install --with-deps chromium
+      - name: ブラウザテスト
+        run: npm run test:e2e
+      - name: 失敗したときの記録を残す
+        if: ${{ !cancelled() && failure() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7

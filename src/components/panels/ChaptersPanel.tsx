@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
 import { ProjectData, ChapterItem } from '../../types';
+import { getPlayhead } from '../../services/playhead';
+import { PlayheadSeconds } from '../usePlayhead';
 import type { ProjectUpdate } from '../../services/projectHistory';
 import { generateYouTubeDescription } from '../../services/srtExporter';
 import {
@@ -8,29 +10,26 @@ import {
   Trash2,
   Copy,
   Check,
-  Sparkles,
   Bookmark,
 } from 'lucide-react';
 
 interface ChaptersPanelProps {
   project: ProjectData;
   onUpdateProject: (update: ProjectUpdate) => void;
-  currentTime: number;
 }
 
 export const ChaptersPanel: React.FC<ChaptersPanelProps> = ({
   project,
   onUpdateProject,
-  currentTime,
 }) => {
   const [copied, setCopied] = useState(false);
   const [newTitleJa, setNewTitleJa] = useState('');
 
   const handleAddChapterAtCurrent = () => {
-    const title = newTitleJa.trim() || `チャプター (${Math.floor(currentTime)}s)`;
+    const title = newTitleJa.trim() || `チャプター (${Math.floor(getPlayhead())}s)`;
     const newChapter: ChapterItem = {
       id: `ch_${Date.now()}`,
-      timeSec: Math.floor(currentTime),
+      timeSec: Math.floor(getPlayhead()),
       title: {
         ja: title,
         en: title,
@@ -85,11 +84,12 @@ export const ChaptersPanel: React.FC<ChaptersPanelProps> = ({
       <div className="bg-[#141924] border border-[#232d3d] rounded-lg p-3.5 space-y-3">
         <span className="font-semibold text-[#D4AF37] flex items-center space-x-1.5 text-xs">
           <ListOrdered className="w-4 h-4" />
-          <span>チャプターの追加（現在位置: {Math.floor(currentTime)}s）</span>
+          <span>チャプターの追加（現在位置: <PlayheadSeconds digits={0} />s）</span>
         </span>
 
         <div className="flex space-x-2">
           <input
+            aria-label="新しいチャプターのタイトル"
             type="text"
             placeholder="例: 樹齢四百年の杉並木と随神門"
             value={newTitleJa}
@@ -124,10 +124,11 @@ export const ChaptersPanel: React.FC<ChaptersPanelProps> = ({
                 className="bg-[#121620] border border-[#212937] rounded p-2 flex items-center justify-between text-xs"
               >
                 <div className="flex items-center space-x-2 truncate">
-                  <span className="font-mono text-[#D4AF37] bg-[#1a2230] px-1.5 py-0.5 rounded text-[11px]">
+                  <span className="font-mono text-[#D4AF37] bg-[#1a2230] px-1.5 py-0.5 rounded text-xs">
                     {timeStr}
                   </span>
                   <input
+                    aria-label={`${timeStr} のチャプタータイトル`}
                     type="text"
                     value={ch.title.ja}
                     onChange={(e) =>
@@ -141,9 +142,11 @@ export const ChaptersPanel: React.FC<ChaptersPanelProps> = ({
 
                 <button
                   onClick={() => handleDeleteChapter(ch.id)}
-                  className="text-gray-500 hover:text-red-400 p-1"
+                  className="text-gray-400 hover:text-red-400 p-1"
+                  title="このチャプターを削除"
+                  aria-label={`${timeStr} のチャプターを削除`}
                 >
-                  <Trash2 className="w-3.5 h-3.5" />
+                  <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
                 </button>
               </div>
             );
@@ -167,11 +170,12 @@ export const ChaptersPanel: React.FC<ChaptersPanelProps> = ({
           </button>
         </div>
 
-        <p className="text-[11px] text-[#8A99AD]">
+        <p className="text-xs text-[#8A99AD]">
           YouTubeにアップロードする際、動画の概要欄にそのまま貼り付けることで動画内にチャプターが自動反映されます。
         </p>
 
         <textarea
+          aria-label="YouTube概要欄用のテキスト"
           rows={7}
           readOnly
           value={descriptionText}

@@ -11,6 +11,8 @@ export default defineConfig({
   testDir: './e2e',
   globalSetup: './e2e/global-setup.ts',
   timeout: 60_000,
+  // A shared CI machine is slower and less even than a PC: one more try there before a test counts as failed
+  retries: process.env.CI ? 1 : 0,
   expect: { timeout: 10_000 },
   reporter: [['list'], ['html', { open: 'never' }]],
   use: {

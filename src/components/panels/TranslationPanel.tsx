@@ -13,7 +13,6 @@ import {
 import { downloadSRTFile } from '../../services/srtExporter';
 import { notify } from '../../services/notifications';
 import {
-  Globe,
   Key,
   BookOpen,
   Sparkles,
@@ -22,7 +21,6 @@ import {
   Trash2,
   Check,
   RefreshCw,
-  AlertCircle,
   FileText,
 } from 'lucide-react';
 
@@ -166,15 +164,16 @@ export const TranslationPanel: React.FC<TranslationPanelProps> = ({
             <Key className="w-4 h-4" />
             <span>Claude API 設定 (ブラウザ内保管)</span>
           </span>
-          <span className="text-[10px] text-gray-400">Anthropic Messages API</span>
+          <span className="text-[11px] text-gray-400 shrink-0 whitespace-nowrap ml-2">Anthropic API</span>
         </div>
 
-        <p className="text-[11px] text-[#8A99AD] leading-relaxed">
+        <p className="text-xs text-[#8A99AD] leading-relaxed">
           APIキーはこのブラウザ内にのみ保存され、翻訳時にAnthropicのAPIへ直接送信されます。プロジェクトの保存ファイル（JSON）には含まれません。
         </p>
 
         <div className="flex items-center space-x-2">
           <input
+            aria-label="Claude APIキー"
             type="password"
             placeholder="sk-ant-api03-..."
             value={apiKeyInput}
@@ -201,7 +200,7 @@ export const TranslationPanel: React.FC<TranslationPanelProps> = ({
               setModel(next);
               saveClaudeModel(next);
             }}
-            className="flex-1 bg-[#1a2331] border border-[#2d3a4e] rounded px-2 py-1.5 text-xs text-white outline-none focus:border-[#D4AF37]"
+            className="flex-1 min-w-0 bg-[#1a2331] border border-[#2d3a4e] rounded px-2 py-1.5 text-xs text-white outline-none focus:border-[#D4AF37]"
           >
             {CLAUDE_MODELS.map((m) => (
               <option key={m.id} value={m.id} className="bg-[#151a23]">
@@ -212,7 +211,7 @@ export const TranslationPanel: React.FC<TranslationPanelProps> = ({
         </div>
 
         {statusMessage && (
-          <div className="text-[11px] text-emerald-400 bg-emerald-950/40 border border-emerald-800/60 rounded px-2.5 py-1 flex items-center space-x-1">
+          <div className="text-xs text-emerald-400 bg-emerald-950/40 border border-emerald-800/60 rounded px-2.5 py-1 flex items-center space-x-1">
             <Check className="w-3.5 h-3.5 shrink-0" />
             <span>{statusMessage}</span>
           </div>
@@ -226,10 +225,10 @@ export const TranslationPanel: React.FC<TranslationPanelProps> = ({
             <BookOpen className="w-4 h-4" />
             <span>神社・聖地 固有名詞 用語集 ({project.glossary.length}件)</span>
           </span>
-          <span className="text-[10px] text-amber-300/80">表記ゆれ防止</span>
+          <span className="text-[11px] text-amber-300/80">表記ゆれ防止</span>
         </div>
 
-        <p className="text-[11px] text-[#8A99AD] leading-relaxed">
+        <p className="text-xs text-[#8A99AD] leading-relaxed">
           御祭神や聖地名の表記ルールを登録すると、Claude翻訳時に自動的に指定表記で統一されます。
         </p>
 
@@ -242,13 +241,13 @@ export const TranslationPanel: React.FC<TranslationPanelProps> = ({
             >
               <div className="space-y-0.5 truncate">
                 <div className="font-semibold text-white truncate font-serif-jp">{g.japanese}</div>
-                <div className="text-[10px] text-[#A0AEC0] truncate">
+                <div className="text-[11px] text-[#A0AEC0] truncate">
                   EN: <span className="text-[#93C5FD]">{g.english}</span>
                 </div>
               </div>
               <button
                 onClick={() => handleDeleteGlossaryTerm(g.id)}
-                className="text-gray-500 hover:text-red-400 p-1 shrink-0"
+                className="text-gray-400 hover:text-red-400 p-1 shrink-0"
                 title="削除"
               >
                 <Trash2 className="w-3.5 h-3.5" />
@@ -259,9 +258,10 @@ export const TranslationPanel: React.FC<TranslationPanelProps> = ({
 
         {/* Add new term */}
         <div className="pt-2 border-t border-[#202938] space-y-2">
-          <span className="text-[11px] font-medium text-gray-300 block">新規用語の登録:</span>
+          <span className="text-xs font-medium text-gray-300 block">新規用語の登録:</span>
           <div className="grid grid-cols-2 gap-1.5">
             <input
+              aria-label="日本語の用語"
               type="text"
               placeholder="日本語 (例: 天照大御神)"
               value={newJaTerm}
@@ -269,6 +269,7 @@ export const TranslationPanel: React.FC<TranslationPanelProps> = ({
               className="bg-[#1a2331] border border-[#2b384c] rounded px-2 py-1 text-xs text-white"
             />
             <input
+              aria-label="英語の訳語"
               type="text"
               placeholder="英語 (Amaterasu-Ōmikami)"
               value={newEnTerm}
@@ -343,7 +344,7 @@ export const TranslationPanel: React.FC<TranslationPanelProps> = ({
               key={sub.id}
               className="bg-[#121620] border border-[#212a38] rounded-lg p-3 space-y-2 text-xs"
             >
-              <div className="flex items-center justify-between text-[11px] text-[#718096] border-b border-[#1b222e] pb-1.5">
+              <div className="flex items-center justify-between text-xs text-[#94A3B8] border-b border-[#1b222e] pb-1.5">
                 <span className="font-mono text-[#D4AF37]">
                   #{idx + 1} ({sub.startTime}s - {(sub.startTime + sub.duration).toFixed(1)}s)
                 </span>
@@ -359,8 +360,9 @@ export const TranslationPanel: React.FC<TranslationPanelProps> = ({
 
               {/* Japanese Original */}
               <div>
-                <span className="text-[10px] text-[#D4AF37] block mb-0.5">🇯🇵 日本語（原文）:</span>
+                <span className="text-[11px] text-[#D4AF37] block mb-0.5">🇯🇵 日本語（原文）:</span>
                 <input
+                  aria-label={`${sub.startTime}秒のテロップ 日本語（原文）`}
                   type="text"
                   value={sub.text.ja}
                   onChange={(e) => handleTextChange(sub.id, 'ja', e.target.value)}
@@ -370,8 +372,9 @@ export const TranslationPanel: React.FC<TranslationPanelProps> = ({
 
               {/* English Translation */}
               <div>
-                <span className="text-[10px] text-[#60A5FA] block mb-0.5">🇬🇧 英語（English）:</span>
+                <span className="text-[11px] text-[#60A5FA] block mb-0.5">🇬🇧 英語（English）:</span>
                 <input
+                  aria-label={`${sub.startTime}秒のテロップ 英語`}
                   type="text"
                   value={sub.text.en || ''}
                   onChange={(e) => handleTextChange(sub.id, 'en', e.target.value)}

@@ -1,7 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { ProjectData, AudioTrackItem } from '../../types';
+import { getPlayhead } from '../../services/playhead';
+import { PlayheadSeconds, usePlayhead } from '../usePlayhead';
 import type { ProjectUpdate } from '../../services/projectHistory';
-import { audioEngine, LOUDNESS_PROFILES, LoudnessProfile } from '../../services/audioEngine';
+import { audioEngine, LOUDNESS_PROFILES } from '../../services/audioEngine';
 import { saveMediaFile } from '../../services/storage';
 import { notify } from '../../services/notifications';
 import { WaveformVisualizer } from '../WaveformVisualizer';
@@ -11,42 +13,39 @@ import {
   Music,
   Wind,
   Volume2,
-  Sliders,
   Trash2,
   Upload,
-  Plus,
-  Play,
-  Pause,
-  AlertCircle,
   Sparkles,
   Gauge,
-  Check,
   CheckCircle2,
-  SlidersHorizontal,
-  ArrowRight,
-  Info,
   Scissors,
   Clock,
-  ArrowLeftRight,
   MoveHorizontal,
-  RotateCcw,
   Crosshair,
 } from 'lucide-react';
 
 interface AudioPanelProps {
   project: ProjectData;
   onUpdateProject: (update: ProjectUpdate) => void;
-  currentTime: number;
   isRecordingMic: boolean;
   onToggleRecordMic: () => void;
   selectedAudioId?: string | null;
   onSelectAudio?: (id: string | null) => void;
 }
 
+/** Where the playhead is across the selected sound's overview (the whole video, left to right) */
+const PlayheadNeedle: React.FC<{ duration: number }> = ({ duration }) => {
+  const percent = usePlayhead((time) => Math.round((time / Math.max(1, duration)) * 1000) / 10);
+  return (
+    <div className="absolute top-0 bottom-0 w-0.5 bg-[#C84B31] pointer-events-none z-10" style={{ left: `${percent}%` }}>
+      <div className="w-2.5 h-2.5 -ml-[4px] -mt-0.5 bg-[#C84B31] rotate-45 rounded-xs shadow" />
+    </div>
+  );
+};
+
 export const AudioPanel: React.FC<AudioPanelProps> = ({
   project,
   onUpdateProject,
-  currentTime,
   isRecordingMic,
   onToggleRecordMic,
   selectedAudioId,
@@ -271,20 +270,20 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({
             <Gauge className="w-4 h-4 text-[#D4AF37]" />
             <span>ラウドネスノーマライゼーション (自動基準化)</span>
           </span>
-          <span className="text-[10px] font-mono bg-[#D4AF37]/15 text-[#F7E7B4] border border-[#D4AF37]/30 px-1.5 py-0.5 rounded">
+          <span className="text-[11px] font-mono bg-[#D4AF37]/15 text-[#F7E7B4] border border-[#D4AF37]/30 px-1.5 py-0.5 rounded shrink-0 whitespace-nowrap ml-2">
             LUFS基準
           </span>
         </div>
 
-        <p className="text-[11px] text-[#94A3B8] leading-relaxed">
+        <p className="text-xs text-[#94A3B8] leading-relaxed">
           YouTube等の配信プラットフォーム基準に合わせて、ナレーション・BGM・環境音の音量をワンクリックで黄金比率に自動最適化します。
         </p>
 
         {/* Profile Tabs */}
         <div className="space-y-1.5">
-          <label className="text-[11px] text-gray-300 font-medium block">
+          <div className="text-xs text-gray-300 font-medium block">
             目標ラウドネス基準プロファイル:
-          </label>
+          </div>
           <div className="grid grid-cols-3 gap-1.5">
             {(['youtube', 'sacred_calm', 'shorts'] as const).map((key) => {
               const prof = LOUDNESS_PROFILES[key];
@@ -299,13 +298,13 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({
                       : 'bg-[#141b25] border-[#222e3e] text-gray-400 hover:text-gray-200 hover:bg-[#1a2330]'
                   }`}
                 >
-                  <div className="font-semibold text-[11px] truncate">{prof.name}</div>
-                  <div className="text-[10px] font-mono mt-0.5 opacity-80">{prof.badge}</div>
+                  <div className="font-semibold text-xs truncate">{prof.name}</div>
+                  <div className="text-[11px] font-mono mt-0.5 opacity-80">{prof.badge}</div>
                 </button>
               );
             })}
           </div>
-          <div className="text-[11px] text-[#A0AEC0] bg-[#0f141d] p-2 rounded border border-[#1e2634] leading-relaxed">
+          <div className="text-xs text-[#A0AEC0] bg-[#0f141d] p-2 rounded border border-[#1e2634] leading-relaxed">
             <span className="text-[#D4AF37] font-semibold">{currentProfile.name}: </span>
             {currentProfile.description}
           </div>
@@ -313,21 +312,21 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({
 
         {/* Live LUFS Balance Levels Indicator */}
         <div className="bg-[#0c1017] p-2.5 rounded-lg border border-[#1f2837] space-y-2 text-xs">
-          <div className="flex items-center justify-between text-[11px] text-gray-400 border-b border-[#1b2330] pb-1">
+          <div className="flex items-center justify-between text-xs text-gray-400 border-b border-[#1b2330] pb-1">
             <span>測定ラウドネス（音量反映後・ITU-R BS.1770）</span>
-            <span className="text-[10px] text-[#93C5FD]">基準目標</span>
+            <span className="text-[11px] text-[#93C5FD] shrink-0 whitespace-nowrap ml-2">基準目標</span>
           </div>
 
           {/* Voice/Narration row */}
           <div className="space-y-1">
-            <div className="flex justify-between text-[11px]">
+            <div className="flex justify-between text-xs">
               <span className="text-red-300 flex items-center space-x-1">
                 <Mic className="w-3 h-3 text-red-400" />
                 <span>主音声 (ナレーション)</span>
               </span>
               <span className="font-mono text-gray-300">
                 {primaryNarrLoudness.label}
-                <span className="text-[#64748B] ml-1.5 font-normal">/ 目標 {currentProfile.narrationTargetLufs} LUFS</span>
+                <span className="text-[#94A3B8] ml-1.5 font-normal">/ 目標 {currentProfile.narrationTargetLufs} LUFS</span>
               </span>
             </div>
             <div className="w-full bg-[#1e2838] h-1.5 rounded-full overflow-hidden">
@@ -342,14 +341,14 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({
 
           {/* BGM row */}
           <div className="space-y-1">
-            <div className="flex justify-between text-[11px]">
+            <div className="flex justify-between text-xs">
               <span className="text-indigo-300 flex items-center space-x-1">
                 <Music className="w-3 h-3 text-indigo-400" />
                 <span>BGM (雅楽・瞑想旋律)</span>
               </span>
               <span className="font-mono text-gray-300">
                 {bgmLoudness.label}
-                <span className="text-[#64748B] ml-1.5 font-normal">/ 目標 {currentProfile.bgmTargetLufs} LUFS</span>
+                <span className="text-[#94A3B8] ml-1.5 font-normal">/ 目標 {currentProfile.bgmTargetLufs} LUFS</span>
               </span>
             </div>
             <div className="w-full bg-[#1e2838] h-1.5 rounded-full overflow-hidden">
@@ -364,14 +363,14 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({
 
           {/* Ambience row */}
           <div className="space-y-1">
-            <div className="flex justify-between text-[11px]">
+            <div className="flex justify-between text-xs">
               <span className="text-emerald-300 flex items-center space-x-1">
                 <Wind className="w-3 h-3 text-emerald-400" />
                 <span>自然音 (風・せせらぎ)</span>
               </span>
               <span className="font-mono text-gray-300">
                 {ambienceLoudness.label}
-                <span className="text-[#64748B] ml-1.5 font-normal">/ 目標 {currentProfile.ambienceTargetLufs} LUFS</span>
+                <span className="text-[#94A3B8] ml-1.5 font-normal">/ 目標 {currentProfile.ambienceTargetLufs} LUFS</span>
               </span>
             </div>
             <div className="w-full bg-[#1e2838] h-1.5 rounded-full overflow-hidden">
@@ -404,7 +403,7 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({
 
         {/* Recent Adjustments Breakdown Summary */}
         {recentSummary && recentSummary.length > 0 && (
-          <div className="bg-[#10141d] p-2 rounded border border-[#202938] space-y-1 text-[11px]">
+          <div className="bg-[#10141d] p-2 rounded border border-[#202938] space-y-1 text-xs">
             <span className="text-gray-400 block font-medium">調整詳細:</span>
             {recentSummary.map((item, idx) => {
               const sign = item.gainDeltaDb >= 0 ? `+${item.gainDeltaDb}` : `${item.gainDeltaDb}`;
@@ -429,13 +428,13 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({
             <span>オーディオトリミング & 時間調整</span>
           </span>
           {activeTrack && (
-            <span className="text-[10px] font-mono text-[#A0AEC0] bg-[#1a2332] px-2 py-0.5 rounded border border-[#26354b]">
+            <span className="text-[11px] font-mono text-[#A0AEC0] bg-[#1a2332] px-2 py-0.5 rounded border border-[#26354b]">
               {activeTrack.startTime.toFixed(1)}s 〜 {(activeTrack.startTime + activeTrack.duration).toFixed(1)}s
             </span>
           )}
         </div>
 
-        <p className="text-[11px] text-[#8A99AD] leading-relaxed">
+        <p className="text-xs text-[#8A99AD] leading-relaxed">
           タイムライン上の音声クリップを選択し、開始時間・長さ・冒頭無音カットをスライダーで視覚的に調整できます。
         </p>
 
@@ -447,7 +446,7 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({
           <div className="space-y-3">
             {/* Track Selector Pills */}
             <div className="space-y-1">
-              <label className="text-[10px] text-gray-400 uppercase font-medium">調整対象トラックを選択:</label>
+              <div className="text-[11px] text-gray-400 uppercase font-medium">調整対象トラックを選択:</div>
               <div className="flex items-center space-x-1.5 overflow-x-auto pb-1 scrollbar-none">
                 {project.audioTracks.map((tr) => {
                   const isCur = activeTrack?.id === tr.id;
@@ -475,7 +474,7 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({
               <div className="bg-[#0e131d] border border-[#202b3c] rounded-lg p-3 space-y-3 text-xs">
                 {/* Visual Mini-Timeline Span Bar */}
                 <div className="space-y-1">
-                  <div className="flex justify-between text-[10px] text-gray-400 font-mono">
+                  <div className="flex justify-between text-[11px] text-gray-400 font-mono">
                     <span>0.0s</span>
                     <span className="text-[#D4AF37] font-semibold">{activeTrack.name} ({activeTrack.duration.toFixed(1)}秒間)</span>
                     <span>{Math.floor(project.duration)}s</span>
@@ -500,12 +499,7 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({
                     </div>
 
                     {/* Red Playhead Needle */}
-                    <div
-                      className="absolute top-0 bottom-0 w-0.5 bg-[#C84B31] pointer-events-none z-10"
-                      style={{ left: `${(currentTime / Math.max(1, project.duration)) * 100}%` }}
-                    >
-                      <div className="w-2.5 h-2.5 -ml-[4px] -mt-0.5 bg-[#C84B31] rotate-45 rounded-xs shadow" />
-                    </div>
+                    <PlayheadNeedle duration={project.duration} />
                   </div>
                 </div>
 
@@ -513,28 +507,29 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({
                 <div className="grid grid-cols-2 gap-1.5 pt-1">
                   <button
                     onClick={() => {
-                      const newStart = Math.max(0, Math.min(project.duration - 0.5, Math.floor(currentTime * 10) / 10));
+                      const newStart = Math.max(0, Math.min(project.duration - 0.5, Math.floor(getPlayhead() * 10) / 10));
                       handleUpdateTrack(activeTrack.id, { startTime: newStart });
                     }}
-                    className="py-1 px-2 bg-[#172130] hover:bg-[#202d42] border border-[#2a3c57] rounded text-[11px] text-[#93C5FD] flex items-center justify-center space-x-1 cursor-pointer transition-colors"
+                    className="py-1 px-2 bg-[#172130] hover:bg-[#202d42] border border-[#2a3c57] rounded text-xs text-[#93C5FD] flex items-center justify-center space-x-1 cursor-pointer transition-colors"
                     title="現在位置に音声クリップの開始時間を移動"
                   >
                     <Crosshair className="w-3 h-3 text-[#60A5FA]" />
-                    <span>再生位置 ({currentTime.toFixed(1)}s) から開始</span>
+                    <span>再生位置 (<PlayheadSeconds digits={1} />s) から開始</span>
                   </button>
 
                   <button
                     onClick={() => {
-                      if (currentTime > activeTrack.startTime) {
-                        const newDuration = Math.max(0.5, Math.floor((currentTime - activeTrack.startTime) * 10) / 10);
+                      const playhead = getPlayhead();
+                      if (playhead > activeTrack.startTime) {
+                        const newDuration = Math.max(0.5, Math.floor((playhead - activeTrack.startTime) * 10) / 10);
                         handleUpdateTrack(activeTrack.id, { duration: newDuration });
                       }
                     }}
-                    className="py-1 px-2 bg-[#26171b] hover:bg-[#361e24] border border-[#522b34] rounded text-[11px] text-[#FCA5A5] flex items-center justify-center space-x-1 cursor-pointer transition-colors"
+                    className="py-1 px-2 bg-[#26171b] hover:bg-[#361e24] border border-[#522b34] rounded text-xs text-[#FCA5A5] flex items-center justify-center space-x-1 cursor-pointer transition-colors"
                     title="現在位置でクリップをカット（終了）"
                   >
                     <Scissors className="w-3 h-3 text-red-400" />
-                    <span>再生位置 ({currentTime.toFixed(1)}s) で終了</span>
+                    <span>再生位置 (<PlayheadSeconds digits={1} />s) で終了</span>
                   </button>
                 </div>
 
@@ -547,6 +542,7 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({
                     </span>
                     <div className="flex items-center space-x-1">
                       <input
+                        aria-label="タイムライン開始時間（秒）"
                         type="number"
                         step="0.1"
                         min="0"
@@ -563,6 +559,7 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({
                   </div>
 
                   <input
+                    aria-label="タイムライン開始時間（スライダー）"
                     type="range"
                     min="0"
                     max={Math.max(1, project.duration - 0.5)}
@@ -574,7 +571,7 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({
                     className="w-full h-1.5 bg-[#1f293a] accent-[#D4AF37] cursor-pointer"
                   />
 
-                  <div className="flex justify-end space-x-1 text-[10px]">
+                  <div className="flex justify-end space-x-1 text-[11px]">
                     <button
                       onClick={() => handleUpdateTrack(activeTrack.id, { startTime: 0 })}
                       className="px-1.5 py-0.5 bg-[#161f2c] hover:bg-[#202b3d] text-gray-300 rounded border border-[#243347] cursor-pointer"
@@ -613,6 +610,7 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({
                     </span>
                     <div className="flex items-center space-x-1">
                       <input
+                        aria-label="クリップの長さ（秒）"
                         type="number"
                         step="0.1"
                         min="0.5"
@@ -629,6 +627,7 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({
                   </div>
 
                   <input
+                    aria-label="クリップの長さ（スライダー）"
                     type="range"
                     min="0.5"
                     max={Math.max(project.duration, 60)}
@@ -640,7 +639,7 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({
                     className="w-full h-1.5 bg-[#1f293a] accent-[#60A5FA] cursor-pointer"
                   />
 
-                  <div className="flex justify-end space-x-1 text-[10px]">
+                  <div className="flex justify-end space-x-1 text-[11px]">
                     <button
                       onClick={() =>
                         handleUpdateTrack(activeTrack.id, {
@@ -673,6 +672,7 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({
                     </span>
                     <div className="flex items-center space-x-1">
                       <input
+                        aria-label="音源の冒頭カット（秒）"
                         type="number"
                         step="0.05"
                         min="0"
@@ -689,6 +689,7 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({
                   </div>
 
                   <input
+                    aria-label="音源の冒頭カット（スライダー）"
                     type="range"
                     min="0"
                     max="5.0"
@@ -700,7 +701,7 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({
                     className="w-full h-1.5 bg-[#1f293a] accent-amber-400 cursor-pointer"
                   />
 
-                  <div className="flex items-center justify-between text-[10px] text-gray-400">
+                  <div className="flex items-center justify-between text-[11px] text-gray-400">
                     <span>※ 音源ファイルの先頭から指定秒数スキップして再生</span>
                     <div className="flex space-x-1">
                       <button
@@ -737,13 +738,14 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({
                   <div className="grid grid-cols-2 gap-3 bg-[#111722] p-2 rounded-lg border border-[#1d2737]">
                     {/* Fade In */}
                     <div className="space-y-1">
-                      <div className="flex justify-between text-[11px] text-gray-300">
+                      <div className="flex justify-between text-xs text-gray-300">
                         <span>フェードイン:</span>
                         <span className="font-mono text-emerald-300">
                           {(activeTrack.fadeInSec ?? (activeTrack.type === 'narration' ? 0.05 : 1.5)).toFixed(1)}秒
                         </span>
                       </div>
                       <input
+                        aria-label="フェードイン（秒）"
                         type="range"
                         min="0"
                         max="4.0"
@@ -754,7 +756,7 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({
                         }
                         className="w-full h-1 bg-[#1f293a] accent-emerald-400 cursor-pointer"
                       />
-                      <div className="flex space-x-1 text-[9px]">
+                      <div className="flex space-x-1 text-[11px]">
                         <button
                           onClick={() => handleUpdateTrack(activeTrack.id, { fadeInSec: 0 })}
                           className="px-1 py-0.5 bg-[#17202c] hover:bg-[#202c3d] text-gray-400 rounded cursor-pointer"
@@ -778,13 +780,14 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({
 
                     {/* Fade Out */}
                     <div className="space-y-1">
-                      <div className="flex justify-between text-[11px] text-gray-300">
+                      <div className="flex justify-between text-xs text-gray-300">
                         <span>フェードアウト:</span>
                         <span className="font-mono text-emerald-300">
                           {(activeTrack.fadeOutSec ?? (activeTrack.type === 'narration' ? 0.1 : 2.0)).toFixed(1)}秒
                         </span>
                       </div>
                       <input
+                        aria-label="フェードアウト（秒）"
                         type="range"
                         min="0"
                         max="5.0"
@@ -795,7 +798,7 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({
                         }
                         className="w-full h-1 bg-[#1f293a] accent-emerald-400 cursor-pointer"
                       />
-                      <div className="flex space-x-1 text-[9px]">
+                      <div className="flex space-x-1 text-[11px]">
                         <button
                           onClick={() => handleUpdateTrack(activeTrack.id, { fadeOutSec: 0 })}
                           className="px-1 py-0.5 bg-[#17202c] hover:bg-[#202c3d] text-gray-400 rounded cursor-pointer"
@@ -820,7 +823,7 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({
                 </div>
 
                 {/* Final Status Readout */}
-                <div className="bg-[#121924] p-2 rounded border border-[#1d2736] flex justify-between items-center text-[11px] text-gray-300">
+                <div className="bg-[#121924] p-2 rounded border border-[#1d2736] flex justify-between items-center text-xs text-gray-300">
                   <span className="text-gray-400">タイムライン再生区間:</span>
                   <span className="font-mono text-[#F7E7B4] font-semibold">
                     {activeTrack.startTime.toFixed(1)}s 〜 {(activeTrack.startTime + activeTrack.duration).toFixed(1)}s (有効長: {activeTrack.duration.toFixed(1)}s)
@@ -839,10 +842,10 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({
             <Mic className="w-4 h-4 text-red-400" />
             <span>ブラウザ直接 ナレーション収録</span>
           </span>
-          <span className="text-[10px] text-gray-400 font-mono">現在位置: {currentTime.toFixed(1)}s</span>
+          <span className="text-[11px] text-gray-400 font-mono">現在位置: <PlayheadSeconds digits={1} />s</span>
         </div>
 
-        <p className="text-[11px] text-[#8A99AD] leading-relaxed">
+        <p className="text-xs text-[#8A99AD] leading-relaxed">
           「録音開始」を押してマイクに向かって話すと、現在の再生位置にナレーション音声が自動でタイムライン配置されます。
         </p>
 
@@ -862,7 +865,7 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({
           ) : (
             <>
               <Mic className="w-4 h-4 text-red-400" />
-              <span>マイク録音を開始（{currentTime.toFixed(1)}sから）</span>
+              <span>マイク録音を開始（<PlayheadSeconds digits={1} />sから）</span>
             </>
           )}
         </button>
@@ -870,7 +873,7 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({
         {/* Narration Clips List with Track Normalization */}
         {narrationTracks.length > 0 && (
           <div className="space-y-2 pt-2 border-t border-[#1f2735]">
-            <span className="text-[11px] text-gray-400 block font-medium">録音済みナレーション一覧:</span>
+            <span className="text-xs text-gray-400 block font-medium">録音済みナレーション一覧:</span>
             {narrationTracks.map((narr) => {
               const narrLoud = trackLoudness(narr);
               return (
@@ -882,26 +885,26 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({
                     <div className="truncate flex items-center space-x-2">
                       <Mic className="w-3.5 h-3.5 text-red-400 shrink-0" />
                       <span className="truncate font-medium text-white">{narr.name}</span>
-                      <span className="text-[10px] text-gray-500 font-mono">
+                      <span className="text-[11px] text-gray-400 font-mono">
                         ({narr.startTime}s - {(narr.startTime + narr.duration).toFixed(1)}s)
                       </span>
                     </div>
                     <button
                       onClick={() => handleDeleteTrack(narr.id)}
-                      className="text-gray-500 hover:text-red-400 p-1 cursor-pointer"
+                      className="text-gray-400 hover:text-red-400 p-1 cursor-pointer"
                       title="削除"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
                   </div>
 
-                  <div className="flex items-center justify-between text-[11px] text-gray-300">
+                  <div className="flex items-center justify-between text-xs text-gray-300">
                     <span className="font-mono text-red-300">
                       音量: {Math.round(narr.volume * 100)}% ({narrLoud.label})
                     </span>
                     <button
                       onClick={() => handleNormalizeSingleTrack(narr.id, currentProfile.narrationTargetLufs)}
-                      className="px-2 py-0.5 bg-[#2a1d1d] hover:bg-[#382626] border border-red-500/50 text-red-200 rounded text-[10px] flex items-center space-x-1 cursor-pointer transition-colors"
+                      className="px-2 py-0.5 bg-[#2a1d1d] hover:bg-[#382626] border border-red-500/50 text-red-200 rounded text-[11px] flex items-center space-x-1 cursor-pointer transition-colors"
                       title="このナレーションクリップのみを目標LUFSに自動補正"
                     >
                       <Gauge className="w-3 h-3 text-red-400" />
@@ -910,6 +913,7 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({
                   </div>
 
                   <input
+                    aria-label={`${narr.name} の音量`}
                     type="range"
                     min="0"
                     max="1"
@@ -932,12 +936,12 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({
             <Music className="w-4 h-4 text-[#A78BFA]" />
             <span>雅楽・瞑想BGM & 自動ダッキング</span>
           </span>
-          <span className="text-[10px] bg-amber-400/10 text-amber-300 border border-amber-400/30 px-1.5 py-0.5 rounded">
+          <span className="text-[11px] bg-amber-400/10 text-amber-300 border border-amber-400/30 px-1.5 py-0.5 rounded">
             Auto-Ducking
           </span>
         </div>
 
-        <p className="text-[11px] text-[#8A99AD] leading-relaxed">
+        <p className="text-xs text-[#8A99AD] leading-relaxed">
           ナレーション再生時、BGM音量を自動で滑らかに下げることで、語りの声が澄んで明瞭に聞こえるよう自動調整されます。
         </p>
 
@@ -947,11 +951,11 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({
               <div className="flex justify-between items-center text-gray-300 mb-1">
                 <span>
                   通常時 BGM音量: <span className="font-mono text-[#D4AF37]">{Math.round(bgmTrack.volume * 100)}%</span>
-                  <span className="text-[10px] text-gray-400 ml-1.5 font-mono">({bgmLoudness.label})</span>
+                  <span className="text-[11px] text-gray-400 ml-1.5 font-mono">({bgmLoudness.label})</span>
                 </span>
                 <button
                   onClick={() => handleNormalizeSingleTrack(bgmTrack.id, currentProfile.bgmTargetLufs)}
-                  className="px-2 py-0.5 bg-[#202738] hover:bg-[#2b354c] border border-indigo-400/50 text-indigo-200 rounded text-[10px] flex items-center space-x-1 cursor-pointer transition-colors"
+                  className="px-2 py-0.5 bg-[#202738] hover:bg-[#2b354c] border border-indigo-400/50 text-indigo-200 rounded text-[11px] flex items-center space-x-1 cursor-pointer transition-colors"
                   title="BGMのみを目標LUFSに自動補正"
                 >
                   <Gauge className="w-3 h-3 text-indigo-400" />
@@ -960,6 +964,7 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({
               </div>
 
               <input
+                aria-label="BGMの音量"
                 type="range"
                 min="0"
                 max="1"
@@ -984,6 +989,7 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({
               <div className="flex items-center justify-between">
                 <span className="text-gray-300 font-medium">ナレーション中の音量低下 (ダッキング)</span>
                 <input
+                  aria-label="ナレーション中の音量低下（ダッキング）"
                   type="checkbox"
                   checked={bgmTrack.autoDucking?.enabled ?? true}
                   onChange={(e) =>
@@ -1000,13 +1006,14 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({
 
               {bgmTrack.autoDucking?.enabled && (
                 <div>
-                  <div className="flex justify-between text-[11px] text-gray-400 mb-1">
+                  <div className="flex justify-between text-xs text-gray-400 mb-1">
                     <span>ナレーション発話時のBGM倍率:</span>
                     <span className="font-mono text-amber-300">
                       {Math.round((bgmTrack.autoDucking.duckVolume ?? 0.2) * 100)}% に減衰
                     </span>
                   </div>
                   <input
+                    aria-label="ダッキング中のBGM音量"
                     type="range"
                     min="0.05"
                     max="0.5"
@@ -1036,6 +1043,7 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({
           <span>手持ちのBGM音源（MP3, WAV等）を読み込む</span>
         </button>
         <input
+          aria-label="BGM音源ファイル"
           ref={bgmFileInputRef}
           type="file"
           accept="audio/*"
@@ -1058,11 +1066,11 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({
             <div className="flex justify-between items-center text-gray-300">
               <span>
                 環境音音量: <span className="font-mono text-emerald-400">{Math.round(ambienceTrack.volume * 100)}%</span>
-                <span className="text-[10px] text-gray-400 ml-1.5 font-mono">({ambienceLoudness.label})</span>
+                <span className="text-[11px] text-gray-400 ml-1.5 font-mono">({ambienceLoudness.label})</span>
               </span>
               <button
                 onClick={() => handleNormalizeSingleTrack(ambienceTrack.id, currentProfile.ambienceTargetLufs)}
-                className="px-2 py-0.5 bg-[#172620] hover:bg-[#21382e] border border-emerald-500/50 text-emerald-200 rounded text-[10px] flex items-center space-x-1 cursor-pointer transition-colors"
+                className="px-2 py-0.5 bg-[#172620] hover:bg-[#21382e] border border-emerald-500/50 text-emerald-200 rounded text-[11px] flex items-center space-x-1 cursor-pointer transition-colors"
                 title="自然音のみを目標LUFSに自動補正"
               >
                 <Gauge className="w-3 h-3 text-emerald-400" />
@@ -1071,6 +1079,7 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({
             </div>
 
             <input
+              aria-label="環境音の音量"
               type="range"
               min="0"
               max="1"
@@ -1101,6 +1110,7 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({
           <span>自然音の音源ファイルを読み込む</span>
         </button>
         <input
+          aria-label="自然音の音源ファイル"
           ref={ambienceFileInputRef}
           type="file"
           accept="audio/*"

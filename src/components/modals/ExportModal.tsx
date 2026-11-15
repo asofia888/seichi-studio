@@ -19,6 +19,7 @@ import {
   Globe,
   Volume2,
 } from 'lucide-react';
+import { useDialog } from './useDialog';
 
 /** File System Access API (Chrome / Edge): lets the export write straight into a file the user picks */
 interface FilePickerWindow {
@@ -90,7 +91,11 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   // A long video goes straight into a file by default (where the browser allows it)
   useEffect(() => {
     if (isOpen) setSaveMode(canSaveToFile && project.duration >= LONG_VIDEO_SEC ? 'file' : 'download');
+    // oxlint-disable-next-line react-hooks/exhaustive-deps -- chosen once when the dialog opens; a later change of length must not undo the user's own choice
   }, [isOpen]);
+
+  // Not while exporting: the progress and the cancel button must stay in view
+  const dialogRef = useDialog(isOpen, onClose, !isExporting);
 
   if (!isOpen) return null;
 
@@ -174,7 +179,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+    <div ref={dialogRef} tabIndex={-1} role="dialog" aria-modal="true" aria-label="動画書き出し" className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
       <div className="bg-[#121620] border border-[#2b384c] rounded-xl max-w-lg w-full max-h-[92vh] overflow-y-auto p-5 space-y-5 shadow-2xl">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-[#212937] pb-3">
@@ -209,7 +214,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
             <span className="text-gray-400">フレームレート / 形式:</span>
             <span className="font-semibold text-white font-mono">{fps} FPS / MP4 (H.264・AAC)</span>
           </div>
-          <p className="text-[10px] text-gray-500 pt-1">
+          <p className="text-[11px] text-gray-400 pt-1">
             ※ MP4に対応していないブラウザではWebM形式で書き出します。書き出し中も別のタブに切り替えて構いません。
           </p>
         </div>
@@ -230,8 +235,8 @@ export const ExportModal: React.FC<ExportModalProps> = ({
                       : 'bg-[#151c27] border-[#273447] text-gray-400 hover:text-white'
                   }`}
                 >
-                  <div className="text-[11px] font-mono">{r.label}</div>
-                  <div className="text-[10px] opacity-80">{r.note}</div>
+                  <div className="text-xs font-mono">{r.label}</div>
+                  <div className="text-[11px] opacity-80">{r.note}</div>
                 </button>
               ))}
             </div>
@@ -250,15 +255,15 @@ export const ExportModal: React.FC<ExportModalProps> = ({
                       : 'bg-[#151c27] border-[#273447] text-gray-400 hover:text-white'
                   }`}
                 >
-                  <div className="text-[11px] font-mono">{f.value}</div>
-                  <div className="text-[10px] opacity-80">{f.note}</div>
+                  <div className="text-xs font-mono">{f.value}</div>
+                  <div className="text-[11px] opacity-80">{f.note}</div>
                 </button>
               ))}
             </div>
           </div>
         </div>
         {resolution === '2160p' && (
-          <p className="text-[10px] text-amber-300/80 -mt-3">
+          <p className="text-[11px] text-amber-300/80 -mt-3">
             4K は書き出しに時間がかかり、パソコンによっては対応していません。写真・動画素材も 4K 以上だときれいに仕上がります。
           </p>
         )}
@@ -282,8 +287,8 @@ export const ExportModal: React.FC<ExportModalProps> = ({
                       : 'bg-[#151c27] border-[#273447] text-gray-400 hover:text-white'
                   }`}
                 >
-                  <div className="text-[11px]">{label}</div>
-                  <div className="text-[10px] opacity-80">{note}</div>
+                  <div className="text-xs">{label}</div>
+                  <div className="text-[11px] opacity-80">{note}</div>
                 </button>
               ))}
             </div>
@@ -292,10 +297,10 @@ export const ExportModal: React.FC<ExportModalProps> = ({
 
         {/* Language Selection */}
         <div className="space-y-1.5 text-xs">
-          <label className="text-gray-300 font-medium flex items-center space-x-1.5">
+          <div className="text-gray-300 font-medium flex items-center space-x-1.5">
             <Globe className="w-3.5 h-3.5 text-[#D4AF37]" />
             <span>動画内に焼き込む字幕言語を選択:</span>
-          </label>
+          </div>
           <div className="grid grid-cols-2 gap-2">
             {[
               { code: 'ja', label: '日本語 (JA)' },
@@ -319,10 +324,10 @@ export const ExportModal: React.FC<ExportModalProps> = ({
 
         {/* Loudness of the whole soundtrack */}
         <div className="space-y-1.5 text-xs">
-          <label className="text-gray-300 font-medium flex items-center space-x-1.5">
+          <div className="text-gray-300 font-medium flex items-center space-x-1.5">
             <Volume2 className="w-3.5 h-3.5 text-[#D4AF37]" />
             <span>音量の仕上げ（動画全体の音量をそろえる）:</span>
-          </label>
+          </div>
           <div className="grid grid-cols-4 gap-1.5">
             {LOUDNESS_CHOICES.map((choice) => (
               <button
@@ -336,14 +341,14 @@ export const ExportModal: React.FC<ExportModalProps> = ({
                     : 'bg-[#151c27] border-[#273447] text-gray-400 hover:text-white'
                 }`}
               >
-                <div className="text-[11px] truncate">{choice === 'off' ? 'そろえない' : LOUDNESS_PROFILES[choice].name}</div>
-                <div className="text-[10px] font-mono opacity-80">
+                <div className="text-xs truncate">{choice === 'off' ? 'そろえない' : LOUDNESS_PROFILES[choice].name}</div>
+                <div className="text-[11px] font-mono opacity-80">
                   {choice === 'off' ? 'ミックスのまま' : LOUDNESS_PROFILES[choice].badge}
                 </div>
               </button>
             ))}
           </div>
-          <p className="text-[10px] text-gray-500 leading-relaxed">
+          <p className="text-[11px] text-gray-400 leading-relaxed">
             YouTube は -14 LUFS より大きい動画の音量を下げます。どれを選んでも、音割れを防ぐリミッター（ピーク {PEAK_CEILING_DB} dBFS）がかかります。
           </p>
         </div>
@@ -392,19 +397,19 @@ export const ExportModal: React.FC<ExportModalProps> = ({
                   再ダウンロード
                 </a>
               ) : (
-                <span className="text-[11px] text-emerald-200 shrink-0 ml-2 truncate max-w-[45%]" title={finished.fileName}>
+                <span className="text-xs text-emerald-200 shrink-0 ml-2 truncate max-w-[45%]" title={finished.fileName}>
                   保存先: {finished.fileName}
                 </span>
               )}
             </div>
             {finished.soundtrack && (
-              <div className="bg-[#10141d] border border-[#232c3c] rounded-lg p-2.5 text-[11px] text-gray-300 flex items-center space-x-1.5">
+              <div className="bg-[#10141d] border border-[#232c3c] rounded-lg p-2.5 text-xs text-gray-300 flex items-center space-x-1.5">
                 <Volume2 className="w-3.5 h-3.5 text-[#D4AF37] shrink-0" />
                 <span>{describeSoundtrack(finished.soundtrack)}</span>
               </div>
             )}
             {finished.warnings.length > 0 && (
-              <div className="bg-amber-950/40 border border-amber-800/60 rounded-lg p-3 text-[11px] text-amber-200 space-y-1">
+              <div className="bg-amber-950/40 border border-amber-800/60 rounded-lg p-3 text-xs text-amber-200 space-y-1">
                 {finished.warnings.map((w, i) => (
                   <div key={i} className="flex items-start space-x-1.5">
                     <AlertCircle className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-px" />

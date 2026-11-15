@@ -543,3 +543,23 @@ export const shrinePresets = [
   { id: 'ise', name: '🌊 三重・伊勢神宮 内宮（五十鈴川の清流）', data: iseProjectData },
 ];
 
+
+/** An empty project to start a new video from: the channel's look, and nothing on the timeline yet */
+export function createBlankProject(): ProjectData {
+  const now = new Date().toISOString();
+  return {
+    ...initialProjectData,
+    id: `project_${Date.now()}`,
+    title: '新しいプロジェクト',
+    duration: 0,
+    createdAt: now,
+    updatedAt: now,
+    branding: { ...initialProjectData.branding, opSubtitle: { ja: '', en: '' } },
+    glossary: [],
+    videoClips: [],
+    subtitles: [],
+    accessCards: [],
+    audioTracks: [],
+    chapters: [],
+  };
+}

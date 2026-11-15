@@ -6,24 +6,25 @@ import {
   X,
   Download,
   Camera,
-  Sliders,
-  Sparkles,
 } from 'lucide-react';
+
+import { useDialog } from './useDialog';
+import { usePlayhead } from '../usePlayhead';
 
 interface ThumbnailModalProps {
   isOpen: boolean;
   onClose: () => void;
   project: ProjectData;
-  currentTime: number;
 }
 
 export const ThumbnailModal: React.FC<ThumbnailModalProps> = ({
   isOpen,
   onClose,
   project,
-  currentTime,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  // The frame under the playhead is the background; while the dialog is closed it does not follow the playhead
+  const currentTime = usePlayhead((time) => (isOpen ? time : 0));
 
   const [title, setTitle] = useState(project.title.split(' ')[0] || '戸隠神社 奥社');
   const [subtitle, setSubtitle] = useState('樹齢四百年の杉並木と神話の杜');
@@ -133,6 +134,8 @@ export const ThumbnailModal: React.FC<ThumbnailModalProps> = ({
     }
   }, [isOpen, project, currentTime, title, subtitle, badge, fontSize, goldIntensity, isLandscape, width, height, imageReadyTick]);
 
+  const dialogRef = useDialog(isOpen, onClose);
+
   if (!isOpen) return null;
 
   const handleDownload = () => {
@@ -147,7 +150,7 @@ export const ThumbnailModal: React.FC<ThumbnailModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+    <div ref={dialogRef} tabIndex={-1} role="dialog" aria-modal="true" aria-label="サムネイル作成" className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
       <div className="bg-[#121620] border border-[#2b384c] rounded-xl max-w-4xl w-full max-h-[92vh] flex flex-col shadow-2xl overflow-hidden">
         {/* Header */}
         <div className="h-12 border-b border-[#212937] px-4 flex items-center justify-between">
@@ -178,10 +181,11 @@ export const ThumbnailModal: React.FC<ThumbnailModalProps> = ({
           <div className="w-full md:w-80 flex flex-col justify-between space-y-4 text-xs text-[#E2E8F0] overflow-y-auto">
             <div className="space-y-3">
               <div>
-                <label className="text-[#D4AF37] block font-semibold mb-1">
+                <label htmlFor="thumb-field-1" className="text-[#D4AF37] block font-semibold mb-1">
                   メイン聖地名（大きく表示）
                 </label>
                 <input
+                  id="thumb-field-1"
                   type="text"
                   value={title}
                   onChange={(e) => setTitle(e.target.value)}
@@ -190,8 +194,9 @@ export const ThumbnailModal: React.FC<ThumbnailModalProps> = ({
               </div>
 
               <div>
-                <label className="text-gray-300 block mb-1">サブキャッチコピー</label>
+                <label htmlFor="thumb-field-2" className="text-gray-300 block mb-1">サブキャッチコピー</label>
                 <input
+                  id="thumb-field-2"
                   type="text"
                   value={subtitle}
                   onChange={(e) => setSubtitle(e.target.value)}
@@ -200,8 +205,9 @@ export const ThumbnailModal: React.FC<ThumbnailModalProps> = ({
               </div>
 
               <div>
-                <label className="text-gray-300 block mb-1">朱印ラベル（バッジ）</label>
+                <label htmlFor="thumb-field-3" className="text-gray-300 block mb-1">朱印ラベル（バッジ）</label>
                 <input
+                  id="thumb-field-3"
                   type="text"
                   value={badge}
                   onChange={(e) => setBadge(e.target.value)}
@@ -212,7 +218,7 @@ export const ThumbnailModal: React.FC<ThumbnailModalProps> = ({
                     <button
                       key={b}
                       onClick={() => setBadge(b)}
-                      className={`px-1.5 py-0.5 rounded text-[10px] border transition-colors ${
+                      className={`px-1.5 py-0.5 rounded text-[11px] border transition-colors ${
                         badge === b
                           ? 'bg-amber-950/70 border-amber-500 text-amber-200'
                           : 'bg-[#141b25] border-[#253245] text-gray-400 hover:text-white'
@@ -230,6 +236,7 @@ export const ThumbnailModal: React.FC<ThumbnailModalProps> = ({
                   <span className="font-mono text-[#D4AF37]">{fontSize}px</span>
                 </div>
                 <input
+                  aria-label="文字サイズ"
                   type="range"
                   min="48"
                   max="120"
@@ -243,6 +250,7 @@ export const ThumbnailModal: React.FC<ThumbnailModalProps> = ({
               <div className="flex items-center justify-between pt-2 border-t border-[#202938]">
                 <span className="text-gray-300">黄金グラデーション文字</span>
                 <input
+                  aria-label="黄金グラデーション文字"
                   type="checkbox"
                   checked={goldIntensity}
                   onChange={(e) => setGoldIntensity(e.target.checked)}
@@ -250,7 +258,7 @@ export const ThumbnailModal: React.FC<ThumbnailModalProps> = ({
                 />
               </div>
 
-              <div className="text-[11px] text-gray-400 bg-[#161c27] p-2 rounded">
+              <div className="text-xs text-gray-400 bg-[#161c27] p-2 rounded">
                 ※ 現在のタイムライン再生位置（{currentTime.toFixed(1)}s）の映像フレームが背景として使われます。
               </div>
             </div>

@@ -5,11 +5,12 @@
  * browser cannot encode H.264/AAC, at 1080p or 4K and 24/30/60 fps. Video clips are decoded
  * frame-accurately, and the soundtrack is a complete offline mixdown (narration, BGM with
  * auto-ducking, ambience, video clip sound, fades), brought to the target loudness with its peaks
- * limited. The file is kept in memory, or written straight to a file the user picked (long videos).
+ * limited. The soundtrack is produced ten seconds at a time alongside the picture, so its memory
+ * use does not grow with the length of the video. The file is kept in memory, or written
+ * straight to a file the user picked (long videos).
  */
 import {
   ALL_FORMATS,
-  AudioBufferSink,
   AudioBufferSource,
   BlobSource,
   BufferTarget,
@@ -31,9 +32,10 @@ import {
 } from 'mediabunny';
 import { ProjectData, SupportedLanguage, VideoClipItem } from '../types';
 import { canvasRenderer, DecodedFrame } from './canvasRenderer';
-import { clipSoundSpan, clipSpeed, pictureAt, pictureLayers } from './composition';
-import { DEFAULT_DUCK_RAMP_SEC, DEFAULT_DUCK_VOLUME, getSpeechSpans, measureBufferLoudness, mergeSpans } from './audioEngine';
-import { applyGainWithLimiter, dbToGain, MAX_BOOST_DB, peakDb } from './mastering';
+import { pictureAt, pictureLayers } from './composition';
+import { MasteringChain, planMastering } from './mastering';
+import { MIX_SAMPLE_RATE } from './soundtrack';
+import { MIX_BLOCK_SEC, SoundtrackMixer, toAudioBuffer } from './soundtrackMixer';
 
 export interface ExportProgress {
   percentage: number;
@@ -96,7 +98,7 @@ export class ExportCanceledError extends Error {
   }
 }
 
-const SAMPLE_RATE = 48000;
+const SAMPLE_RATE = MIX_SAMPLE_RATE;
 
 /** Output size: the 1920x1080 (or 1080x1920) layout, doubled for 4K */
 export function exportSize(project: ProjectData, resolution: ExportResolution) {
@@ -175,218 +177,6 @@ function streamInto(file: WritableFile) {
     abort: () => file.abort(),
   });
   return { stream, keep: () => (isKept = true) };
-}
-
-// ---------------------------------------------------------------------------
-// Audio mixdown
-// ---------------------------------------------------------------------------
-
-async function decodeAudio(ctx: BaseAudioContext, url: string): Promise<AudioBuffer | null> {
-  try {
-    const data = await (await fetch(url)).arrayBuffer();
-    return await ctx.decodeAudioData(data);
-  } catch {
-    return null;
-  }
-}
-
-/**
- * The sound of a video file between source seconds `from` and `to`, decoded on its own: a long
- * video is never decoded whole, and a clip cut into many pieces decodes only those pieces.
- * `start` is the source second the buffer begins at. Null when the file has no sound track.
- */
-async function decodeVideoSound(url: string, from: number, to: number): Promise<{ buffer: AudioBuffer; start: number } | null> {
-  let input: Input | null = null;
-  try {
-    const blob = await (await fetch(url)).blob();
-    input = new Input({ source: new BlobSource(blob), formats: ALL_FORMATS });
-    const track = await input.getPrimaryAudioTrack();
-    if (!track || !(await track.canDecode())) return null;
-    const first = await track.getFirstTimestamp();
-
-    const pieces: AudioBuffer[] = [];
-    let start: number | null = null;
-    for await (const { buffer, timestamp } of new AudioBufferSink(track).buffers(first + from, first + to)) {
-      start ??= timestamp - first;
-      pieces.push(buffer);
-    }
-    if (pieces.length === 0 || start === null) return null;
-
-    const channels = Math.max(...pieces.map((p) => p.numberOfChannels));
-    const joined = new AudioBuffer({
-      length: pieces.reduce((n, p) => n + p.length, 0),
-      numberOfChannels: channels,
-      sampleRate: pieces[0].sampleRate,
-    });
-    let position = 0;
-    for (const piece of pieces) {
-      for (let c = 0; c < channels; c++) {
-        joined.copyToChannel(piece.getChannelData(Math.min(c, piece.numberOfChannels - 1)), c, position);
-      }
-      position += piece.length;
-    }
-    return { buffer: joined, start };
-  } catch {
-    return null; // a video without a sound track (or one this browser cannot decode) is played silent
-  } finally {
-    input?.dispose();
-  }
-}
-
-/** Gain node that fades in at `start` and out at `end`, at the given volume */
-function createFadeGain(
-  ctx: BaseAudioContext,
-  start: number,
-  end: number,
-  volume: number,
-  fadeIn: number,
-  fadeOut: number
-): GainNode {
-  const gain = ctx.createGain();
-  const fadeInEnd = Math.min(end, start + Math.max(0, fadeIn));
-  gain.gain.setValueAtTime(fadeIn > 0 ? 0 : volume, start);
-  if (fadeIn > 0) {
-    gain.gain.linearRampToValueAtTime(volume, fadeInEnd);
-  }
-  if (fadeOut > 0) {
-    // Never start fading out before the fade-in has finished
-    gain.gain.setValueAtTime(volume, Math.max(fadeInEnd, end - fadeOut));
-    gain.gain.linearRampToValueAtTime(0, end);
-  }
-  return gain;
-}
-
-/** Play `buffer` from `offset` (seconds into it) over timeline seconds start to end, at `speed` */
-function scheduleSource(
-  ctx: BaseAudioContext,
-  buffer: AudioBuffer,
-  destination: AudioNode,
-  start: number,
-  end: number,
-  offset: number,
-  loop: boolean,
-  speed = 1
-) {
-  const sourceOffset = loop ? offset % buffer.duration : offset;
-  if (sourceOffset >= buffer.duration || end <= start) return; // trimmed past the end of the file
-  const source = ctx.createBufferSource();
-  source.buffer = buffer;
-  source.loop = loop;
-  source.playbackRate.value = speed;
-  source.connect(destination);
-  // The length to play is measured in the buffer's own seconds
-  source.start(start, sourceOffset, (end - start) * speed);
-}
-
-/**
- * Mix every audible track into one stereo buffer. Mirrors the preview: muted tracks and
- * tracks without a sound file are silent.
- */
-async function renderAudioMix(project: ProjectData, duration: number, warnings: string[]): Promise<AudioBuffer | null> {
-  const muted = project.mutedTracks || {};
-  const ctx = new OfflineAudioContext(2, Math.max(1, Math.ceil(duration * SAMPLE_RATE)), SAMPLE_RATE);
-  let hasSound = false;
-
-  // Narrations and talking in video clips: the BGM ducks under both
-  const narrationSpans = getSpeechSpans(project.audioTracks, project.videoClips, muted)
-    .map(([s, e]): [number, number] => [s, Math.min(duration, e)])
-    .filter(([s, e]) => e > s);
-
-  for (const track of project.audioTracks) {
-    if (muted[track.type] || !track.dataUrl) continue;
-    const start = Math.max(0, track.startTime);
-    const end = Math.min(duration, track.startTime + track.duration);
-    if (end <= start) continue;
-
-    const buffer = await decodeAudio(ctx, track.dataUrl);
-    if (!buffer) {
-      warnings.push(`音声「${track.name}」を読み込めなかったため、無音で書き出しました。`);
-      continue;
-    }
-
-    const isLooped = track.type === 'bgm' || track.type === 'ambience';
-    const fadeIn = track.fadeInSec ?? (isLooped ? 1.5 : 0.05);
-    const fadeOut = track.fadeOutSec ?? (isLooped ? 2.0 : 0.1);
-    const fade = createFadeGain(ctx, start, end, Math.max(0, Math.min(1, track.volume)), fadeIn, fadeOut);
-    fade.connect(ctx.destination);
-
-    let input: AudioNode = fade;
-    if (track.type === 'bgm' && track.autoDucking?.enabled !== false && narrationSpans.length > 0) {
-      // Ducking runs on its own gain node so its automation never collides with the fades
-      // The same curve the preview follows (duckGainAt)
-      const duckLevel = track.autoDucking?.duckVolume ?? DEFAULT_DUCK_VOLUME;
-      const ramp = track.autoDucking?.fadeSec ?? DEFAULT_DUCK_RAMP_SEC;
-      const duck = ctx.createGain();
-      duck.gain.setValueAtTime(1, 0);
-      for (const [s, e] of mergeSpans(narrationSpans, ramp * 2)) {
-        duck.gain.setValueAtTime(1, Math.max(0, s - ramp));
-        duck.gain.linearRampToValueAtTime(duckLevel, Math.max(0, s));
-        duck.gain.setValueAtTime(duckLevel, e);
-        duck.gain.linearRampToValueAtTime(1, e + ramp);
-      }
-      duck.connect(fade);
-      input = duck;
-    }
-
-    scheduleSource(ctx, buffer, input, start, end, Math.max(0, track.trimStart || 0), isLooped);
-    hasSound = true;
-  }
-
-  // Original sound recorded with the video clips (crossfaded at dissolves, sped up or slowed down with the picture)
-  if (!muted.video) {
-    for (const clip of project.videoClips) {
-      const volume = Math.max(0, Math.min(1, clip.volume ?? 1));
-      if (clip.type !== 'video' || !clip.dataUrl || volume === 0) continue;
-      const span = clipSoundSpan(project, clip);
-      const start = Math.max(0, span.start);
-      const end = Math.min(duration, span.end);
-      if (end <= start) continue;
-
-      const speed = clipSpeed(clip);
-      const from = span.sourceOffset + (start - span.start) * speed;
-      const sound = await decodeVideoSound(clip.dataUrl, from, from + (end - start) * speed);
-      if (!sound) continue; // a video without a sound track is normal
-
-      const fade = createFadeGain(ctx, start, end, volume, span.fadeIn, span.fadeOut);
-      fade.connect(ctx.destination);
-      // The decoded sound may begin a moment after `from` (where the file's first sound packet is)
-      const lateBy = Math.max(0, sound.start - from) / speed;
-      scheduleSource(ctx, sound.buffer, fade, start + lateBy, end, Math.max(0, from - sound.start), false, speed);
-      hasSound = true;
-    }
-  }
-
-  return hasSound ? await ctx.startRendering() : null;
-}
-
-// Close enough to the target loudness; YouTube's own measurement varies by about this much
-const LOUDNESS_TOLERANCE_LU = 0.5;
-
-/**
- * Bring the mix to `targetLufs` with one gain for the whole soundtrack (raising it by at most
- * MAX_BOOST_DB), and keep every peak under the limiter's ceiling. Limiting the loudest moments
- * takes a little loudness off, so the gain is topped up once more if it fell short. In place.
- */
-async function masterSoundtrack(mix: AudioBuffer, targetLufs: number | null): Promise<SoundtrackLevels> {
-  const channels = Array.from({ length: mix.numberOfChannels }, (_, c) => mix.getChannelData(c));
-  let lufs = await measureBufferLoudness(mix);
-  let gainDb = 0;
-
-  if (targetLufs !== null && lufs !== null) {
-    gainDb = Math.min(MAX_BOOST_DB, targetLufs - lufs);
-    applyGainWithLimiter(channels, mix.sampleRate, dbToGain(gainDb));
-    lufs = await measureBufferLoudness(mix);
-    if (lufs !== null && lufs < targetLufs - LOUDNESS_TOLERANCE_LU && gainDb < MAX_BOOST_DB) {
-      const more = Math.min(MAX_BOOST_DB - gainDb, targetLufs - lufs);
-      applyGainWithLimiter(channels, mix.sampleRate, dbToGain(more));
-      gainDb += more;
-      lufs = await measureBufferLoudness(mix);
-    }
-  } else {
-    applyGainWithLimiter(channels, mix.sampleRate, 1);
-  }
-
-  return { lufs, gainDb: Math.round(gainDb * 10) / 10, peakDb: Math.round(peakDb(channels) * 10) / 10 };
 }
 
 // ---------------------------------------------------------------------------
@@ -542,6 +332,7 @@ export async function exportProjectVideo(
   };
   // A picked file nobody writes to (an error before encoding) is let go without changing it
   let fileStream: ReturnType<typeof streamInto> | null = null;
+  let mixer: SoundtrackMixer | null = null;
   const releaseUnusedFile = () => {
     if (destination && !fileStream) destination.abort().catch(() => {});
   };
@@ -567,17 +358,26 @@ export async function exportProjectVideo(
     }
     checkCanceled();
 
-    // 2. Soundtrack
-    onProgress?.({ percentage: 5, statusText: '音声をミックス中（ダッキング・フェードを反映）...' });
-    const mixedAudio = await renderAudioMix(project, duration, warnings);
+    // 2. Soundtrack: find out how loud the mix is, and with that what to do to it. The sound
+    // itself is produced later, block by block, as the picture gets there.
+    onProgress?.({ percentage: 5, statusText: '音声を準備中...' });
+    mixer = chosen.audioCodec ? await SoundtrackMixer.open(project, duration, warnings) : null;
     checkCanceled();
-    let soundtrack: SoundtrackLevels | null = null;
-    if (mixedAudio) {
-      onProgress?.({
-        percentage: 7,
-        statusText: targetLufs === null ? '音割れを防ぐ処理中...' : `音量を ${targetLufs} LUFS にそろえています...`,
-      });
-      soundtrack = await masterSoundtrack(mixedAudio, targetLufs);
+    let mastering: MasteringChain | null = null;
+    if (mixer) {
+      const opened = mixer;
+      let pass = 0;
+      const readMix = () => {
+        const passStart = 5 + Math.min(pass++, 1) * 2;
+        return opened.blocks((index) => {
+          checkCanceled();
+          onProgress?.({
+            percentage: Math.floor(passStart + (index / opened.blockCount) * 2),
+            statusText: `音量を ${targetLufs} LUFS にそろえています（ダッキング・フェードを反映）...`,
+          });
+        });
+      };
+      mastering = new MasteringChain(2, SAMPLE_RATE, await planMastering(readMix, 2, SAMPLE_RATE, targetLufs));
       checkCanceled();
     }
 
@@ -593,10 +393,22 @@ export async function exportProjectVideo(
     const videoSource = new CanvasSource(canvas, { codec: chosen.videoCodec, bitrate: videoBitrate(options.resolution, fps) });
     output.addVideoTrack(videoSource, { frameRate: fps });
     let audioSource: AudioBufferSource | null = null;
-    if (mixedAudio && chosen.audioCodec) {
+    if (mixer && chosen.audioCodec) {
       audioSource = new AudioBufferSource({ codec: chosen.audioCodec, bitrate: QUALITY_HIGH });
       output.addAudioTrack(audioSource);
     }
+    // Mix, master and encode the next ten seconds of sound; after the last block, what the limiter still holds
+    let soundBlocks = 0;
+    const encodeNextSoundBlock = async () => {
+      if (!mixer || !mastering || !audioSource) return;
+      const finished = mastering.process(await mixer.render(soundBlocks++));
+      if (finished[0].length > 0) await audioSource.add(toAudioBuffer(finished));
+      if (soundBlocks === mixer.blockCount) {
+        const rest = mastering.flush();
+        if (rest[0].length > 0) await audioSource.add(toAudioBuffer(rest));
+        audioSource.close();
+      }
+    };
 
     // Which source timestamps each video clip will be asked for, in frame order
     // (during a dissolve or under a B-roll clip, two clips are on screen at once)
@@ -613,16 +425,12 @@ export async function exportProjectVideo(
     try {
       await output.start();
 
-      if (audioSource && mixedAudio) {
-        onProgress?.({ percentage: 8, statusText: '音声をエンコード中...' });
-        await audioSource.add(mixedAudio);
-        audioSource.close();
-      }
-
-      // 4. Frames, rendered at exact timestamps (no real-time pacing, so audio and video cannot drift)
+      // 4. Frames, rendered at exact timestamps (no real-time pacing, so audio and video cannot drift),
+      // each stretch of sound just before the picture it belongs to
       for (let f = 0; f < totalFrames; f++) {
         checkCanceled();
         const t = f / fps;
+        while (mixer && soundBlocks < mixer.blockCount && soundBlocks * MIX_BLOCK_SEC <= t) await encodeNextSoundBlock();
         const videoFrames = new Map<string, DecodedFrame | null>();
         for (const layer of videoLayersAt(t)) {
           videoFrames.set(layer.clip.id, await frames.frameFor(layer.clip));
@@ -639,6 +447,7 @@ export async function exportProjectVideo(
           await yieldToBrowser();
         }
       }
+      while (mixer && soundBlocks < mixer.blockCount) await encodeNextSoundBlock();
 
       checkCanceled();
       onProgress?.({ percentage: 97, statusText: 'ファイルを仕上げ中...' });
@@ -668,9 +477,10 @@ export async function exportProjectVideo(
       fileExtension: chosen.fileExtension,
       formatLabel: `${isMp4 ? 'MP4' : 'WebM'} (${videoLabel}${audioLabel})`,
       warnings,
-      soundtrack,
+      soundtrack: audioSource && mastering ? mastering.levels() : null,
     };
   } finally {
+    mixer?.dispose();
     releaseUnusedFile();
   }
 }

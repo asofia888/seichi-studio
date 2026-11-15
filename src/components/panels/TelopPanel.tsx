@@ -1,14 +1,14 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { ProjectData, MultilingualSubtitleItem, SubtitleCategory } from '../../types';
+import { getPlayhead } from '../../services/playhead';
+import { PlayheadSeconds } from '../usePlayhead';
 import type { ProjectUpdate } from '../../services/projectHistory';
 import {
   Type,
-  Plus,
   Trash2,
   Bookmark,
   MessageSquare,
   Sparkles,
-  HelpCircle,
 } from 'lucide-react';
 
 interface TelopPanelProps {
@@ -16,7 +16,6 @@ interface TelopPanelProps {
   onUpdateProject: (update: ProjectUpdate) => void;
   selectedSubId: string | null;
   onSelectSubtitle: (id: string) => void;
-  currentTime: number;
 }
 
 export const TelopPanel: React.FC<TelopPanelProps> = ({
@@ -24,10 +23,7 @@ export const TelopPanel: React.FC<TelopPanelProps> = ({
   onUpdateProject,
   selectedSubId,
   onSelectSubtitle,
-  currentTime,
 }) => {
-  const [activeCategory, setActiveCategory] = useState<SubtitleCategory>('commentary');
-
   const selectedSub = project.subtitles.find((s) => s.id === selectedSubId);
 
   // Add new telop at current playhead time
@@ -37,7 +33,7 @@ export const TelopPanel: React.FC<TelopPanelProps> = ({
     if (category === 'sanctuary_header') {
       newSub = {
         id: `sub_${Date.now()}`,
-        startTime: Math.floor(currentTime * 10) / 10,
+        startTime: Math.floor(getPlayhead() * 10) / 10,
         duration: 7,
         category: 'sanctuary_header',
         text: { ja: '新規 聖地名', en: '' },
@@ -51,7 +47,7 @@ export const TelopPanel: React.FC<TelopPanelProps> = ({
     } else if (category === 'etiquette_tip') {
       newSub = {
         id: `sub_${Date.now()}`,
-        startTime: Math.floor(currentTime * 10) / 10,
+        startTime: Math.floor(getPlayhead() * 10) / 10,
         duration: 6,
         category: 'etiquette_tip',
         text: { ja: '参拝作法の心得を入力', en: '' },
@@ -63,7 +59,7 @@ export const TelopPanel: React.FC<TelopPanelProps> = ({
     } else {
       newSub = {
         id: `sub_${Date.now()}`,
-        startTime: Math.floor(currentTime * 10) / 10,
+        startTime: Math.floor(getPlayhead() * 10) / 10,
         duration: 6,
         category: 'commentary',
         text: { ja: '静謐な神域の解説文をここに入力します。', en: '' },
@@ -106,7 +102,7 @@ export const TelopPanel: React.FC<TelopPanelProps> = ({
       <div>
         <span className="text-xs font-semibold text-[#D4AF37] uppercase tracking-wider block mb-2 flex items-center space-x-1.5">
           <Type className="w-4 h-4" />
-          <span>定型テロップの追加（現在位置 {currentTime.toFixed(1)}s）</span>
+          <span>定型テロップの追加（現在位置 <PlayheadSeconds digits={1} />s）</span>
         </span>
 
         <div className="grid grid-cols-1 gap-2">
@@ -120,7 +116,7 @@ export const TelopPanel: React.FC<TelopPanelProps> = ({
               <div className="text-xs font-semibold text-[#F7E7B4] group-hover:text-white">
                 ① 聖地名カード（名称・所在地・御祭神・ご利益）
               </div>
-              <div className="text-[11px] text-[#A39276] mt-0.5">
+              <div className="text-xs text-[#A39276] mt-0.5">
                 神社名や御祭神を格調高く金枠の銘板風に表示
               </div>
             </div>
@@ -136,7 +132,7 @@ export const TelopPanel: React.FC<TelopPanelProps> = ({
               <div className="text-xs font-semibold text-[#BFDBFE] group-hover:text-white">
                 ② 解説テロップ（下部字幕）
               </div>
-              <div className="text-[11px] text-[#7E96B5] mt-0.5">
+              <div className="text-xs text-[#7E96B5] mt-0.5">
                 漆黒半透明の帯と上品な明朝体による解説テロップ
               </div>
             </div>
@@ -152,7 +148,7 @@ export const TelopPanel: React.FC<TelopPanelProps> = ({
               <div className="text-xs font-semibold text-[#FECACA] group-hover:text-white">
                 ③ 参拝のポイント／作法の注釈
               </div>
-              <div className="text-[11px] text-[#B87D7D] mt-0.5">
+              <div className="text-xs text-[#B87D7D] mt-0.5">
                 朱色の札による「手水の清め」「二礼二拍手一礼」等の作法案内
               </div>
             </div>
@@ -169,26 +165,31 @@ export const TelopPanel: React.FC<TelopPanelProps> = ({
         </div>
 
         <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
-          {project.subtitles.map((sub, index) => {
+          {project.subtitles.map((sub) => {
             const isSelected = sub.id === selectedSubId;
             return (
               <div
                 key={sub.id}
-                onClick={() => onSelectSubtitle(sub.id)}
-                className={`p-2 rounded border flex items-center justify-between cursor-pointer transition-colors ${
+                className={`p-2 rounded border flex items-center justify-between transition-colors ${
                   isSelected
                     ? 'bg-[#1e2838] border-[#D4AF37] text-white'
                     : 'bg-[#12161f] border-[#202734] hover:bg-[#181f2c] text-[#CBD5E1]'
                 }`}
               >
-                <div className="flex items-center space-x-2 truncate">
-                  <span className="text-[10px] text-[#718096] font-mono">{sub.startTime}s</span>
+                {/* The row itself is the button that selects the telop */}
+                <button
+                  type="button"
+                  onClick={() => onSelectSubtitle(sub.id)}
+                  aria-pressed={isSelected}
+                  className="flex items-center space-x-2 flex-1 min-w-0 -my-2 -ml-2 py-2 pl-2 text-left cursor-pointer"
+                >
+                  <span className="text-[11px] text-[#94A3B8] font-mono">{sub.startTime}s</span>
                   <span className="text-xs truncate font-medium">
                     {sub.category === 'sanctuary_header' && '⛩️ [聖地] '}
                     {sub.category === 'etiquette_tip' && '📜 [作法] '}
                     {sub.text.ja}
                   </span>
-                </div>
+                </button>
 
                 <div className="flex items-center space-x-1 shrink-0">
                   <button
@@ -196,7 +197,7 @@ export const TelopPanel: React.FC<TelopPanelProps> = ({
                       e.stopPropagation();
                       handleDelete(sub.id);
                     }}
-                    className="p-1 hover:text-red-400 text-gray-500 rounded"
+                    className="p-1 hover:text-red-400 text-gray-400 rounded"
                     title="削除"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
@@ -215,15 +216,16 @@ export const TelopPanel: React.FC<TelopPanelProps> = ({
             <span className="text-xs font-semibold text-[#D4AF37]">
               選択中のテロップ編集 ({selectedSub.category})
             </span>
-            <span className="text-[10px] text-gray-400 font-mono">
+            <span className="text-[11px] text-gray-400 font-mono">
               {selectedSub.startTime}s 〜 {(selectedSub.startTime + selectedSub.duration).toFixed(1)}s
             </span>
           </div>
 
           <div className="grid grid-cols-2 gap-2 text-xs">
             <div>
-              <label className="text-[#8A99AD] block mb-1">開始時間 (秒)</label>
+              <label htmlFor="telop-field-1" className="text-[#8A99AD] block mb-1">開始時間 (秒)</label>
               <input
+                id="telop-field-1"
                 type="number"
                 step="0.5"
                 value={selectedSub.startTime}
@@ -234,8 +236,9 @@ export const TelopPanel: React.FC<TelopPanelProps> = ({
               />
             </div>
             <div>
-              <label className="text-[#8A99AD] block mb-1">表示秒数 (秒)</label>
+              <label htmlFor="telop-field-2" className="text-[#8A99AD] block mb-1">表示秒数 (秒)</label>
               <input
+                id="telop-field-2"
                 type="number"
                 step="0.5"
                 value={selectedSub.duration}
@@ -251,8 +254,9 @@ export const TelopPanel: React.FC<TelopPanelProps> = ({
           {selectedSub.category === 'sanctuary_header' && selectedSub.sanctuaryMeta && (
             <div className="space-y-2 text-xs pt-1">
               <div>
-                <label className="text-[#D4AF37] block font-medium mb-1">聖地名 (日本語)</label>
+                <label htmlFor="telop-field-3" className="text-[#D4AF37] block font-medium mb-1">聖地名 (日本語)</label>
                 <input
+                  id="telop-field-3"
                   type="text"
                   value={selectedSub.sanctuaryMeta.name.ja}
                   onChange={(e) => {
@@ -270,8 +274,9 @@ export const TelopPanel: React.FC<TelopPanelProps> = ({
               </div>
 
               <div>
-                <label className="text-[#CBD5E1] block mb-1">所在地 (住所・地域)</label>
+                <label htmlFor="telop-field-4" className="text-[#CBD5E1] block mb-1">所在地 (住所・地域)</label>
                 <input
+                  id="telop-field-4"
                   type="text"
                   value={selectedSub.sanctuaryMeta.location.ja}
                   onChange={(e) =>
@@ -287,8 +292,9 @@ export const TelopPanel: React.FC<TelopPanelProps> = ({
               </div>
 
               <div>
-                <label className="text-[#CBD5E1] block mb-1">御祭神 (主祭神・配神)</label>
+                <label htmlFor="telop-field-5" className="text-[#CBD5E1] block mb-1">御祭神 (主祭神・配神)</label>
                 <input
+                  id="telop-field-5"
                   type="text"
                   value={selectedSub.sanctuaryMeta.deity.ja}
                   onChange={(e) =>
@@ -304,8 +310,9 @@ export const TelopPanel: React.FC<TelopPanelProps> = ({
               </div>
 
               <div>
-                <label className="text-[#CBD5E1] block mb-1">ご利益 (神徳)</label>
+                <label htmlFor="telop-field-6" className="text-[#CBD5E1] block mb-1">ご利益 (神徳)</label>
                 <input
+                  id="telop-field-6"
                   type="text"
                   value={selectedSub.sanctuaryMeta.blessing.ja}
                   onChange={(e) =>
@@ -324,8 +331,9 @@ export const TelopPanel: React.FC<TelopPanelProps> = ({
 
           {selectedSub.category === 'commentary' && (
             <div className="text-xs pt-1">
-              <label className="text-[#CBD5E1] block mb-1">解説テキスト (日本語)</label>
+              <label htmlFor="telop-field-7" className="text-[#CBD5E1] block mb-1">解説テキスト (日本語)</label>
               <textarea
+                id="telop-field-7"
                 rows={3}
                 value={selectedSub.text.ja}
                 onChange={(e) =>
@@ -342,8 +350,9 @@ export const TelopPanel: React.FC<TelopPanelProps> = ({
           {selectedSub.category === 'etiquette_tip' && selectedSub.etiquetteTip && (
             <div className="space-y-2 text-xs pt-1">
               <div>
-                <label className="text-[#F87171] block font-medium mb-1">作法見出し</label>
+                <label htmlFor="telop-field-8" className="text-[#F87171] block font-medium mb-1">作法見出し</label>
                 <input
+                  id="telop-field-8"
                   type="text"
                   value={selectedSub.etiquetteTip.title.ja}
                   onChange={(e) =>
@@ -359,8 +368,9 @@ export const TelopPanel: React.FC<TelopPanelProps> = ({
               </div>
 
               <div>
-                <label className="text-[#CBD5E1] block mb-1">作法詳細・注釈</label>
+                <label htmlFor="telop-field-9" className="text-[#CBD5E1] block mb-1">作法詳細・注釈</label>
                 <textarea
+                  id="telop-field-9"
                   rows={2}
                   value={selectedSub.etiquetteTip.detail.ja}
                   onChange={(e) => {

@@ -1,5 +1,6 @@
 import React, { useRef } from 'react';
 import { ProjectData, TransitionType, VideoClipItem } from '../../types';
+import { getPlayhead } from '../../services/playhead';
 import type { ProjectUpdate } from '../../services/projectHistory';
 import { saveMediaFile } from '../../services/storage';
 import { notify } from '../../services/notifications';
@@ -15,7 +16,6 @@ import {
 } from '../../services/timelineEdit';
 import {
   Upload,
-  Plus,
   Trash2,
   Sliders,
   Sparkles,
@@ -74,7 +74,6 @@ interface MediaPanelProps {
   onUpdateProject: (update: ProjectUpdate) => void;
   selectedClipId: string | null;
   onSelectClip: (id: string) => void;
-  currentTime: number;
 }
 
 export const MediaPanel: React.FC<MediaPanelProps> = ({
@@ -82,7 +81,6 @@ export const MediaPanel: React.FC<MediaPanelProps> = ({
   onUpdateProject,
   selectedClipId,
   onSelectClip,
-  currentTime,
 }) => {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   // Set by the B-roll button: the files picked next are laid over the main track at the playhead
@@ -97,7 +95,7 @@ export const MediaPanel: React.FC<MediaPanelProps> = ({
     if (!files || files.length === 0) return;
     const asOverlay = addAsOverlayRef.current;
     addAsOverlayRef.current = false;
-    const overlayAt = currentTime;
+    const overlayAt = getPlayhead();
 
     // startTime is first the offset from the end of the timeline; it becomes absolute when placed below
     const newClips: VideoClipItem[] = [];
@@ -324,9 +322,10 @@ export const MediaPanel: React.FC<MediaPanelProps> = ({
           <span className="text-xs text-[#CBD5E1] group-hover:text-white font-medium">
             PCから動画・写真を選択
           </span>
-          <span className="text-[10px] text-[#64748B]">MP4, MOV, WebM, JPG, PNG対応</span>
+          <span className="text-[11px] text-[#94A3B8]">MP4, MOV, WebM, JPG, PNG対応</span>
         </button>
         <input
+          aria-label="動画・写真ファイル"
           ref={fileInputRef}
           type="file"
           accept="video/*,image/*"
@@ -339,7 +338,7 @@ export const MediaPanel: React.FC<MediaPanelProps> = ({
             addAsOverlayRef.current = true;
             fileInputRef.current?.click();
           }}
-          className="mt-1.5 w-full py-1.5 border border-[#3b3f73] hover:border-[#818CF8] rounded bg-[#15162a] hover:bg-[#1c1e38] flex items-center justify-center space-x-1.5 text-[11px] text-[#C7D2FE] transition-colors"
+          className="mt-1.5 w-full py-1.5 border border-[#3b3f73] hover:border-[#818CF8] rounded bg-[#15162a] hover:bg-[#1c1e38] flex items-center justify-center space-x-1.5 text-xs text-[#C7D2FE] transition-colors"
           title="再生位置から、本編の上に重ねる映像（Bロール）として追加します。本編の声はそのまま聞こえます"
         >
           <Layers className="w-3.5 h-3.5" />
@@ -348,29 +347,29 @@ export const MediaPanel: React.FC<MediaPanelProps> = ({
 
         {/* Quick Sample Sacred Photos */}
         <div className="mt-2.5">
-          <span className="text-[11px] text-[#8A99AD] block mb-1">サンプル写真を追加（テスト用）:</span>
+          <span className="text-xs text-[#8A99AD] block mb-1">サンプル写真を追加（テスト用）:</span>
           <div className="grid grid-cols-2 gap-1.5">
             <button
               onClick={() => handleAddSampleSacredPhoto('奥社 杉並木の参道', '#10281e', '#1e3a2b')}
-              className="px-2 py-1 bg-[#16211c] hover:bg-[#1e2f27] border border-[#2b4c3b] rounded text-[11px] text-[#A7F3D0] truncate text-left"
+              className="px-2 py-1 bg-[#16211c] hover:bg-[#1e2f27] border border-[#2b4c3b] rounded text-xs text-[#A7F3D0] truncate text-left"
             >
               🌲 杉並木の参道
             </button>
             <button
               onClick={() => handleAddSampleSacredPhoto('随神門（朱塗りの楼門）', '#361b17', '#241413')}
-              className="px-2 py-1 bg-[#241715] hover:bg-[#331f1c] border border-[#522b26] rounded text-[11px] text-[#FECACA] truncate text-left"
+              className="px-2 py-1 bg-[#241715] hover:bg-[#331f1c] border border-[#522b26] rounded text-xs text-[#FECACA] truncate text-left"
             >
               ⛩️ 朱塗りの随神門
             </button>
             <button
               onClick={() => handleAddSampleSacredPhoto('奥社拝殿と神域の岩峰', '#192330', '#111722')}
-              className="px-2 py-1 bg-[#141b25] hover:bg-[#1d2735] border border-[#2c3d53] rounded text-[11px] text-[#BFDBFE] truncate text-left"
+              className="px-2 py-1 bg-[#141b25] hover:bg-[#1d2735] border border-[#2c3d53] rounded text-xs text-[#BFDBFE] truncate text-left"
             >
               ⛰️ 奥社拝殿と岩峰
             </button>
             <button
               onClick={() => handleAddSampleSacredPhoto('手水舎（清流と神水）', '#11222b', '#0e181e')}
-              className="px-2 py-1 bg-[#13222a] hover:bg-[#1c303c] border border-[#2b4b5c] rounded text-[11px] text-[#BAE6FD] truncate text-left"
+              className="px-2 py-1 bg-[#13222a] hover:bg-[#1c303c] border border-[#2b4b5c] rounded text-xs text-[#BAE6FD] truncate text-left"
             >
               💧 手水舎の清流
             </button>
@@ -393,15 +392,20 @@ export const MediaPanel: React.FC<MediaPanelProps> = ({
             return (
               <div
                 key={clip.id}
-                onClick={() => onSelectClip(clip.id)}
-                className={`p-2 rounded border flex items-center justify-between cursor-pointer transition-colors ${
+                className={`p-2 rounded border flex items-center justify-between transition-colors ${
                   isSelected
                     ? 'bg-[#1e2838] border-[#D4AF37] text-white'
                     : 'bg-[#12161f] border-[#202734] hover:bg-[#181f2c] text-[#CBD5E1]'
                 }`}
               >
-                <div className="flex items-center space-x-2 truncate">
-                  <span className="text-[11px] text-[#718096] font-mono">{overlay ? `B${index + 1}` : `${index + 1}.`}</span>
+                {/* The row itself is the button that selects the clip; the buttons beside it act on it */}
+                <button
+                  type="button"
+                  onClick={() => onSelectClip(clip.id)}
+                  aria-pressed={isSelected}
+                  className="flex items-center space-x-2 flex-1 min-w-0 -my-2 -ml-2 py-2 pl-2 text-left cursor-pointer"
+                >
+                  <span className="text-xs text-[#94A3B8] font-mono">{overlay ? `B${index + 1}` : `${index + 1}.`}</span>
                   {overlay ? (
                     <Layers className="w-3.5 h-3.5 text-[#818CF8] shrink-0" />
                   ) : clip.type === 'video' ? (
@@ -409,20 +413,20 @@ export const MediaPanel: React.FC<MediaPanelProps> = ({
                   ) : (
                     <ImageIcon className="w-3.5 h-3.5 text-[#34D399] shrink-0" />
                   )}
-                  <span className="text-xs truncate font-medium">{clip.name}</span>
-                </div>
-
-                <div className="flex items-center space-x-2 shrink-0">
-                  <span className="text-[10px] text-[#8A99AD] font-mono">
+                  <span className="text-xs truncate font-medium flex-1">{clip.name}</span>
+                  <span className="text-[11px] text-[#8A99AD] font-mono shrink-0">
                     {clip.startTime}s - {Math.round((clip.startTime + clip.duration) * 100) / 100}s
                   </span>
+                </button>
+
+                <div className="flex items-center space-x-2 shrink-0 ml-2">
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
                       handleMoveInOrder(clip.id, -1);
                     }}
                     disabled={index === 0}
-                    className="p-0.5 hover:text-white text-gray-500 rounded disabled:opacity-30"
+                    className="p-0.5 hover:text-white text-gray-400 rounded disabled:opacity-30"
                     title="ひとつ前と入れ替える"
                   >
                     <ArrowUp className="w-3 h-3" />
@@ -433,7 +437,7 @@ export const MediaPanel: React.FC<MediaPanelProps> = ({
                       handleMoveInOrder(clip.id, 1);
                     }}
                     disabled={index === trackClips.length - 1}
-                    className="p-0.5 hover:text-white text-gray-500 rounded disabled:opacity-30"
+                    className="p-0.5 hover:text-white text-gray-400 rounded disabled:opacity-30"
                     title="ひとつ後と入れ替える"
                   >
                     <ArrowDown className="w-3 h-3" />
@@ -443,7 +447,7 @@ export const MediaPanel: React.FC<MediaPanelProps> = ({
                       e.stopPropagation();
                       handleDeleteClip(clip.id);
                     }}
-                    className="p-1 hover:text-red-400 text-gray-500 rounded"
+                    className="p-1 hover:text-red-400 text-gray-400 rounded"
                     title={overlay ? '削除' : '削除（後ろのクリップを詰める）'}
                   >
                     <Trash2 className="w-3.5 h-3.5" />
@@ -474,7 +478,7 @@ export const MediaPanel: React.FC<MediaPanelProps> = ({
           }}
           className="w-full h-1 bg-[#253245] accent-[#D4AF37]"
         />
-        <p className="text-[10px] text-[#64748B] leading-relaxed">
+        <p className="text-[11px] text-[#94A3B8] leading-relaxed">
           すべての写真・動画にかかります。素材の色をそのまま見せたいときは 0〜30% 程度に弱めてください。
         </p>
       </div>
@@ -487,13 +491,14 @@ export const MediaPanel: React.FC<MediaPanelProps> = ({
               <Sliders className="w-3.5 h-3.5" />
               <span>クリップ設定: {selectedClip.name}</span>
             </span>
-            <span className="text-[10px] text-gray-400 uppercase">{selectedClip.type}</span>
+            <span className="text-[11px] text-gray-400 uppercase">{selectedClip.type}</span>
           </div>
 
           <div className="grid grid-cols-2 gap-3 text-xs">
             <div>
-              <label className="text-[#8A99AD] block mb-1">開始秒 (秒)</label>
+              <label htmlFor="media-field-1" className="text-[#8A99AD] block mb-1">開始秒 (秒)</label>
               <input
+                id="media-field-1"
                 type="number"
                 step="0.5"
                 value={selectedClip.startTime}
@@ -507,8 +512,9 @@ export const MediaPanel: React.FC<MediaPanelProps> = ({
               />
             </div>
             <div>
-              <label className="text-[#8A99AD] block mb-1">表示尺 (秒)</label>
+              <label htmlFor="media-field-2" className="text-[#8A99AD] block mb-1">表示尺 (秒)</label>
               <input
+                id="media-field-2"
                 type="number"
                 step="0.5"
                 value={selectedClip.duration}
@@ -530,7 +536,7 @@ export const MediaPanel: React.FC<MediaPanelProps> = ({
             </span>
             <button
               onClick={handleToggleTrack}
-              className="px-2 py-0.5 rounded border border-[#3b3f73] bg-[#15162a] hover:bg-[#1c1e38] text-[11px] text-[#C7D2FE]"
+              className="px-2 py-0.5 rounded border border-[#3b3f73] bg-[#15162a] hover:bg-[#1c1e38] text-xs text-[#C7D2FE]"
             >
               {isOverlayClip(selectedClip) ? '本編に戻す' : 'Bロールに移す'}
             </button>
@@ -549,7 +555,7 @@ export const MediaPanel: React.FC<MediaPanelProps> = ({
                     <button
                       key={choice.type}
                       onClick={() => handleSetTransition(choice.type)}
-                      className={`py-1 rounded border text-[10px] transition-colors ${
+                      className={`py-1 rounded border text-[11px] transition-colors ${
                         current === choice.type
                           ? 'bg-[#292015] border-[#D4AF37] text-[#F7E7B4] font-semibold'
                           : 'bg-[#121722] border-[#222c3d] text-gray-300 hover:bg-[#1a2333]'
@@ -586,12 +592,12 @@ export const MediaPanel: React.FC<MediaPanelProps> = ({
             {!isOverlayClip(selectedClip) && (
               <button
                 onClick={handleApplyTransitionToAll}
-                className="w-full py-1 rounded border border-[#2b3749] bg-[#121722] hover:bg-[#1a2333] text-[10px] text-gray-300"
+                className="w-full py-1 rounded border border-[#2b3749] bg-[#121722] hover:bg-[#1a2333] text-[11px] text-gray-300"
               >
                 このつなぎを本編のすべてのクリップに使う
               </button>
             )}
-            <p className="text-[10px] text-[#64748B] leading-relaxed">
+            <p className="text-[11px] text-[#94A3B8] leading-relaxed">
               {isOverlayClip(selectedClip)
                 ? 'ディゾルブにすると、Bロールが本編からふわっと現れ、ふわっと消えます。'
                 : '切り替わりの前後半分ずつにかかります。前にクリップがないときは、黒（白）からのフェードインになります。'}
@@ -616,7 +622,7 @@ export const MediaPanel: React.FC<MediaPanelProps> = ({
                   ))}
                 </select>
               </div>
-              <p className="text-[10px] text-[#64748B] leading-relaxed">
+              <p className="text-[11px] text-[#94A3B8] leading-relaxed">
                 映る範囲はそのままで、長さが変わります（本編では後ろのクリップも一緒にずれます）。元の音は高さも変わるので、気になるときは下の音量を0%にしてください。
               </p>
             </div>
@@ -629,7 +635,7 @@ export const MediaPanel: React.FC<MediaPanelProps> = ({
               {selectedClip.color && (
                 <button
                   onClick={() => handleUpdateSelectedClip({ color: undefined })}
-                  className="text-[10px] text-gray-400 hover:text-red-300"
+                  className="text-[11px] text-gray-400 hover:text-red-300"
                 >
                   元に戻す
                 </button>
@@ -639,7 +645,7 @@ export const MediaPanel: React.FC<MediaPanelProps> = ({
               const value = selectedClip.color?.[key] ?? 0;
               return (
                 <div key={key}>
-                  <div className="flex justify-between text-[11px] text-[#8A99AD]">
+                  <div className="flex justify-between text-xs text-[#8A99AD]">
                     <label htmlFor={`color-${key}`}>{label}</label>
                     <span className="font-mono text-[#D4AF37]">{value > 0 ? `+${value}` : value}</span>
                   </div>
@@ -670,6 +676,7 @@ export const MediaPanel: React.FC<MediaPanelProps> = ({
                 <span className="font-mono text-[#D4AF37]">{Math.round((selectedClip.volume ?? 1) * 100)}%</span>
               </div>
               <input
+                aria-label="動画の元音声の音量"
                 type="range"
                 min="0"
                 max="1"
@@ -690,6 +697,7 @@ export const MediaPanel: React.FC<MediaPanelProps> = ({
                   <span>ケン・バーンズ効果 (写真のゆっくりズーム)</span>
                 </span>
                 <input
+                  aria-label="ケン・バーンズ効果"
                   type="checkbox"
                   checked={selectedClip.kenBurns?.enabled ?? true}
                   onChange={(e) =>
@@ -713,7 +721,7 @@ export const MediaPanel: React.FC<MediaPanelProps> = ({
                 <div className="space-y-2 bg-[#171f2c] p-2.5 rounded border border-[#232f42]">
                   {/* Preset Motion Selector */}
                   <div>
-                    <span className="text-[11px] text-[#A0AEC0] block mb-1 font-medium">動作プリセット:</span>
+                    <span className="text-xs text-[#A0AEC0] block mb-1 font-medium">動作プリセット:</span>
                     <div className="grid grid-cols-2 gap-1.5">
                       {[
                         { id: 'zoom_in', name: '⛩️ 鳥居・本殿へズームイン', start: 1.0, end: 1.25, px: 0, py: 0 },
@@ -737,7 +745,7 @@ export const MediaPanel: React.FC<MediaPanelProps> = ({
                               },
                             })
                           }
-                          className={`px-2 py-1 text-left rounded text-[10px] truncate border transition-colors ${
+                          className={`px-2 py-1 text-left rounded text-[11px] truncate border transition-colors ${
                             selectedClip.kenBurns?.preset === preset.id
                               ? 'bg-amber-950/70 border-amber-500 text-amber-200'
                               : 'bg-[#121722] border-[#222c3d] text-gray-300 hover:bg-[#1a2333]'
@@ -753,8 +761,8 @@ export const MediaPanel: React.FC<MediaPanelProps> = ({
                   {selectedClip.dataUrl && (
                     <div className="pt-2 border-t border-[#232f42]">
                       <div className="flex items-center justify-between mb-1">
-                        <span className="text-[11px] text-[#A0AEC0] font-medium">
-                          🎯 注視点 (写真をクリックしてズーム中心を設定):
+                        <span className="text-xs text-[#A0AEC0] font-medium">
+                          🎯 注視点 (写真をクリック、または矢印キーでズーム中心を設定):
                         </span>
                         {selectedClip.kenBurns?.focusPoint && (
                           <button
@@ -766,7 +774,7 @@ export const MediaPanel: React.FC<MediaPanelProps> = ({
                                 },
                               })
                             }
-                            className="text-[10px] text-gray-400 hover:text-red-300"
+                            className="text-[11px] text-gray-400 hover:text-red-300"
                           >
                             中央にリセット
                           </button>
@@ -788,11 +796,32 @@ export const MediaPanel: React.FC<MediaPanelProps> = ({
                             },
                           });
                         }}
+                        tabIndex={0}
+                        role="slider"
+                        aria-label="注視点（矢印キーで上下左右に動かせます）"
+                        aria-valuemin={0}
+                        aria-valuemax={100}
+                        aria-valuenow={Math.round((selectedClip.kenBurns?.focusPoint?.x ?? 0.5) * 100)}
+                        aria-valuetext={`横 ${Math.round((selectedClip.kenBurns?.focusPoint?.x ?? 0.5) * 100)}%、縦 ${Math.round(
+                          (selectedClip.kenBurns?.focusPoint?.y ?? 0.5) * 100
+                        )}%`}
+                        onKeyDown={(e) => {
+                          // Without a mouse: the arrow keys move the point 5% at a time
+                          const step = { ArrowLeft: [-0.05, 0], ArrowRight: [0.05, 0], ArrowUp: [0, -0.05], ArrowDown: [0, 0.05] }[e.key];
+                          if (!step || e.altKey || e.ctrlKey || e.metaKey) return;
+                          e.preventDefault();
+                          e.stopPropagation();
+                          const point = selectedClip.kenBurns?.focusPoint ?? { x: 0.5, y: 0.5 };
+                          const within = (v: number) => Math.round(Math.max(0, Math.min(1, v)) * 100) / 100;
+                          handleUpdateSelectedClip({
+                            kenBurns: { ...selectedClip.kenBurns!, focusPoint: { x: within(point.x + step[0]), y: within(point.y + step[1]) } },
+                          });
+                        }}
                         className="relative w-full h-28 bg-black rounded border border-[#2b3749] overflow-hidden cursor-crosshair group shadow-inner"
                       >
                         <img
                           src={selectedClip.dataUrl}
-                          alt="preview"
+                          alt=""
                           className="w-full h-full object-cover opacity-85 group-hover:opacity-100 transition-opacity pointer-events-none"
                         />
 
@@ -808,7 +837,7 @@ export const MediaPanel: React.FC<MediaPanelProps> = ({
                           <div className="absolute w-1 h-1 bg-[#D4AF37] rounded-full" />
                         </div>
 
-                        <div className="absolute bottom-1 right-1 bg-black/75 px-1.5 py-0.5 rounded text-[9px] font-mono text-amber-300">
+                        <div className="absolute bottom-1 right-1 bg-black/75 px-1.5 py-0.5 rounded text-[11px] font-mono text-amber-300">
                           {selectedClip.kenBurns?.focusPoint
                             ? `(${Math.round(selectedClip.kenBurns.focusPoint.x * 100)}%, ${Math.round(
                                 selectedClip.kenBurns.focusPoint.y * 100
@@ -820,10 +849,11 @@ export const MediaPanel: React.FC<MediaPanelProps> = ({
                   )}
 
                   {/* Manual Scale Sliders */}
-                  <div className="grid grid-cols-2 gap-2 text-[11px] pt-1">
+                  <div className="grid grid-cols-2 gap-2 text-xs pt-1">
                     <div>
                       <span className="text-[#8A99AD] block">開始倍率: {selectedClip.kenBurns.scaleStart}x</span>
                       <input
+                        aria-label="開始倍率"
                         type="range"
                         min="1.0"
                         max="1.35"
@@ -843,6 +873,7 @@ export const MediaPanel: React.FC<MediaPanelProps> = ({
                     <div>
                       <span className="text-[#8A99AD] block">終了倍率: {selectedClip.kenBurns.scaleEnd}x</span>
                       <input
+                        aria-label="終了倍率"
                         type="range"
                         min="1.0"
                         max="1.35"

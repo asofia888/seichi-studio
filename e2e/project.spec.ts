@@ -10,6 +10,7 @@ import {
   expect,
   expectSaved,
   openApp,
+  openProjects,
   openTab,
   seek,
   startEmptyProject,
@@ -83,6 +84,187 @@ test('壊れたプロジェクトファイルを読み込むと、編集中の�
     buffer: Buffer.from('{"title": '),
   });
   await expect(page.getByRole('alert')).toContainText('プロジェクトファイルの読み込みに失敗しました');
+  await expect(titleInput(page)).toHaveValue(initialProjectData.title);
+});
+
+test('項目の欠けたプロジェクトファイルは補って読み込み、プロジェクトでないファイルは断る', async ({ page }) => {
+  await openApp(page);
+  const fileInput = page.locator('input[type=file][accept=".json"]');
+  const jsonFile = (name: string, content: unknown) => ({
+    name,
+    mimeType: 'application/json',
+    buffer: Buffer.from(JSON.stringify(content)),
+  });
+
+  // JSON from somewhere else that happens to have a title: refused, and the editor is untouched
+  await fileInput.setInputFiles(jsonFile('other.json', { title: '別のソフトのファイル' }));
+  await expect(page.getByRole('alert').filter({ hasText: '読み込みに失敗しました' })).toBeVisible();
+  await expect(titleInput(page)).toHaveValue(initialProjectData.title);
+
+  // A project with most of it missing and one clip that cannot be placed: loaded without them
+  await fileInput.setInputFiles(
+    jsonFile('partial.sacred.json', {
+      title: '途中まで',
+      videoClips: [
+        { id: 'ok', name: '残る写真', type: 'image', startTime: 0, duration: 5 },
+        { id: 'broken', name: '壊れた写真', type: 'image', startTime: 'abc', duration: null },
+      ],
+    })
+  );
+  await expect(titleInput(page)).toHaveValue('途中まで');
+  await expect(timeline(page).getByTitle('残る写真', { exact: true })).toBeVisible();
+  await expect(timeline(page).getByTitle('壊れた写真')).toHaveCount(0);
+  await expect(page.getByRole('alert').filter({ hasText: '1 件' })).toBeVisible();
+  await expectSaved(
+    page,
+    (p) => p.title === '途中まで' && p.duration === 5 && p.subtitles.length === 0 && p.audioTracks.length === 0,
+    '欠けていた項目が補われ、長さも正しく保存される'
+  );
+
+  // The editor carries on working
+  await undoButton(page).click();
+  await expect(titleInput(page)).toHaveValue(initialProjectData.title);
+});
+
+test('画面の表示に失敗しても真っ白にならず、プロジェクトを残したまま開き直せる', async ({ page }) => {
+  // The preview fails to draw while this flag is set, which stops the whole editor
+  await page.addInitScript(() => {
+    const getContext = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = function (this: HTMLCanvasElement, ...args: unknown[]) {
+      if (localStorage.getItem('e2e_break_canvas')) throw new Error('プレビューを描画できません');
+      return (getContext as (...a: unknown[]) => unknown).apply(this, args);
+    } as typeof getContext;
+  });
+  await openApp(page);
+  await titleInput(page).fill('止まる前の作品');
+  await expectSaved(page, (p) => p.title === '止まる前の作品', '編集が保存される');
+
+  await page.evaluate(() => localStorage.setItem('e2e_break_canvas', '1'));
+  await page.reload();
+  const errorScreen = page.getByRole('alert');
+  await expect(errorScreen).toContainText('画面の表示中に問題が起きました');
+  await expect(errorScreen).toContainText('プレビューを描画できません');
+  await expect(errorScreen.getByRole('button', { name: '再読み込み' })).toBeVisible();
+
+  // Opening without the project: the app starts on the sample, and the work is still in the list
+  await page.evaluate(() => localStorage.removeItem('e2e_break_canvas'));
+  await errorScreen.getByRole('button', { name: 'サンプルの状態で開き直す' }).click();
+  await expect(titleInput(page)).toHaveValue(initialProjectData.title);
+  const projects = await openProjects(page);
+  await expect(projects.getByRole('listitem').filter({ hasText: '止まる前の作品' })).toBeVisible();
+});
+
+// ---------------------------------------------------------------------------
+// Several projects in one browser, and backups that carry their media
+// ---------------------------------------------------------------------------
+
+test('プロジェクトを新しく作って切り替えても、それぞれの内容が残る', async ({ page }) => {
+  await openApp(page);
+  await titleInput(page).fill('一つ目の動画');
+
+  let projects = await openProjects(page);
+  await expect(projects.getByRole('listitem').filter({ hasText: '一つ目の動画' })).toContainText('編集中');
+  await projects.getByRole('button', { name: '新しいプロジェクト' }).click();
+  await expect(projects).toHaveCount(0);
+  await expect(titleInput(page)).toHaveValue('新しいプロジェクト');
+  await expect(undoButton(page)).toBeDisabled(); // a new project cannot be undone into the previous one
+
+  await addPhotos(page, [{ name: '朱の鳥居.png', png: makePng([200, 30, 30]) }]);
+  await titleInput(page).fill('二つ目の動画');
+  await expectSaved(page, (p) => p.title === '二つ目の動画' && p.videoClips.length === 1, '新しいプロジェクトが保存される');
+
+  // The project open last is the one that comes back
+  await page.reload();
+  await expect(titleInput(page)).toHaveValue('二つ目の動画');
+
+  projects = await openProjects(page);
+  await expect(projects.getByRole('listitem')).toHaveCount(2);
+  await projects.getByRole('listitem').filter({ hasText: '一つ目の動画' }).getByRole('button', { name: '開く' }).click();
+  await expect(titleInput(page)).toHaveValue('一つ目の動画');
+  await expect(timeline(page).getByTitle('大鳥居と参道入口', { exact: true })).toBeVisible();
+  await expect(timeline(page).getByTitle('朱の鳥居', { exact: true })).toHaveCount(0);
+
+  await page.reload();
+  await expect(titleInput(page)).toHaveValue('一つ目の動画');
+  projects = await openProjects(page);
+  await projects.getByRole('listitem').filter({ hasText: '二つ目の動画' }).getByRole('button', { name: '開く' }).click();
+  await expect(timeline(page).getByTitle('朱の鳥居', { exact: true })).toBeVisible();
+});
+
+test('プロジェクトを複製・削除できる（編集中のものは削除できない）', async ({ page }) => {
+  await openApp(page);
+  await titleInput(page).fill('横の動画');
+  const projects = await openProjects(page);
+  const rows = projects.getByRole('listitem');
+  await expect(rows).toHaveCount(1);
+  await expect(rows.first().getByRole('button', { name: '削除' })).toBeDisabled();
+
+  await rows.first().getByRole('button', { name: '複製' }).click();
+  const copy = rows.filter({ hasText: '横の動画 のコピー' });
+  await expect(copy).toBeVisible();
+
+  // Deleting asks first
+  await copy.getByRole('button', { name: '削除' }).click();
+  await copy.getByRole('button', { name: 'やめる' }).click();
+  await expect(copy).toBeVisible();
+  await copy.getByRole('button', { name: '削除' }).click();
+  await copy.getByRole('button', { name: '削除する' }).click();
+  await expect(rows).toHaveCount(1);
+  await expect(titleInput(page)).toHaveValue('横の動画');
+});
+
+test('バックアップは写真ごと別のブラウザへ持ち出せる', async ({ page, browser, baseURL, viewport }) => {
+  await startEmptyProject(page, '持ち出すプロジェクト');
+  await addPhotos(page, [{ name: '朱の鳥居.png', png: makePng([200, 30, 30]) }]);
+  await expectSaved(page, (p) => p.videoClips.length === 1, '写真が保存される');
+
+  const projects = await openProjects(page);
+  const downloading = page.waitForEvent('download');
+  await projects.getByRole('button', { name: 'バックアップ', exact: true }).click();
+  const download = await downloading;
+  expect(download.suggestedFilename()).toBe('持ち出すプロジェクト.sacred.zip');
+  const backupFile = readFileSync(await download.path());
+  await expect(page.getByRole('status').filter({ hasText: '保存しました' })).toBeVisible();
+
+  // Another browser: nothing of this project is stored there
+  const otherBrowser = await browser.newContext({ baseURL, viewport });
+  try {
+    const other = await otherBrowser.newPage();
+    await openApp(other, initialProjectData.title);
+    const otherProjects = await openProjects(other);
+    await otherProjects.locator('input[type=file]').setInputFiles({
+      name: download.suggestedFilename(),
+      mimeType: 'application/zip',
+      buffer: backupFile,
+    });
+    await expect(titleInput(other)).toHaveValue('持ち出すプロジェクト');
+    await expect(otherProjects).toHaveCount(0);
+    await expect(timeline(other).getByTitle('朱の鳥居', { exact: true })).toBeVisible();
+
+    // The photo itself came along (not just its name)
+    await seek(other, 6);
+    await expect.poll(async () => {
+      const [r, g, b] = await previewCenter(other);
+      return r > 120 && g < 80 && b < 80;
+    }, { message: 'プレビューに赤い写真が映る' }).toBe(true);
+
+    // The sample project that was open is still there, next to the restored one
+    await expect((await openProjects(other)).getByRole('listitem')).toHaveCount(2);
+  } finally {
+    await otherBrowser.close();
+  }
+});
+
+test('バックアップでないファイルを読み込むと、今のプロジェクトを残したままエラーを表示する', async ({ page }) => {
+  await openApp(page);
+  const projects = await openProjects(page);
+  await projects.locator('input[type=file]').setInputFiles({
+    name: 'photos.zip',
+    mimeType: 'application/zip',
+    buffer: Buffer.from('this is not a backup'),
+  });
+  await expect(page.getByRole('alert')).toContainText('このアプリのバックアップ');
+  await expect(projects.getByRole('listitem')).toHaveCount(1);
   await expect(titleInput(page)).toHaveValue(initialProjectData.title);
 });
 

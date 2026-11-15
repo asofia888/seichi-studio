@@ -1,0 +1,54 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  // typescript-eslint does not support TypeScript 7 yet; oxlint needs no TypeScript compiler API
+  "plugins": ["typescript", "unicorn", "oxc", "react", "jsx-a11y", "import", "promise"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "error"
+  },
+  "env": {
+    "browser": true,
+    "es2022": true
+  },
+  "rules": {
+    // The new JSX transform needs no React import
+    "react/react-in-jsx-scope": "off",
+    // Rules written for the React Compiler, which this app is not built with. They flag patterns
+    // used here on purpose: resetting a dialog's fields when it opens, saving when the project
+    // changes, time stamps taken in event handlers.
+    "react/set-state-in-effect": "off",
+    "react/exhaustive-effect-dependencies": "off",
+    "react/purity": "off",
+    "react/immutability": "off",
+    // A <div role="dialog"> with its own focus handling (useDialog), and timeline items that are
+    // dragged, cannot be <dialog> / <button> elements without changing how they behave
+    "jsx-a11y/prefer-tag-over-role": "off",
+    // Matters of taste rather than mistakes
+    "unicorn/consistent-function-scoping": "off",
+    "unicorn/prefer-add-event-listener": "off",
+    "unicorn/no-new-array": "off",
+    "promise/always-return": "off",
+    "no-shadow": "off",
+    // Array.prototype.toSorted is ES2023; the build targets ES2022
+    "unicorn/no-array-sort": "off",
+    // False alarms: loops whose condition changes through an awaited call
+    "no-unmodified-loop-condition": "off",
+    // Style sheets are imported for their effect; libraries are used through their default export
+    "import/no-unassigned-import": "off",
+    "import/no-named-as-default": "off",
+    "import/no-named-as-default-member": "off"
+  },
+  "overrides": [
+    {
+      // The timeline's items, trim handles and ruler are dragged and clicked with the mouse. The
+      // same edits are available from the keyboard (Tab / Enter to select, Alt + arrows to move
+      // and resize, arrows to move the playhead), which e2e/accessibility.spec.ts checks.
+      "files": ["src/components/Timeline.tsx"],
+      "rules": {
+        "jsx-a11y/no-static-element-interactions": "off",
+        "jsx-a11y/click-events-have-key-events": "off"
+      }
+    }
+  ],
+  "ignorePatterns": ["dist", "playwright-report", "test-results", "node_modules"]
+}

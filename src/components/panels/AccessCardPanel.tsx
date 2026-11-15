@@ -1,5 +1,7 @@
-import React, { useRef, useState } from 'react';
+import React, { useRef } from 'react';
 import { ProjectData, AccessCardItem, SupportedLanguage } from '../../types';
+import { getPlayhead } from '../../services/playhead';
+import { PlayheadSeconds } from '../usePlayhead';
 import type { ProjectUpdate } from '../../services/projectHistory';
 import {
   MapPin,
@@ -10,21 +12,18 @@ import {
   Image as ImageIcon,
   Check,
   Plus,
-  Trash2,
 } from 'lucide-react';
 
 interface AccessCardPanelProps {
   project: ProjectData;
   onUpdateProject: (update: ProjectUpdate) => void;
   previewLang: SupportedLanguage;
-  currentTime: number;
 }
 
 export const AccessCardPanel: React.FC<AccessCardPanelProps> = ({
   project,
   onUpdateProject,
   previewLang,
-  currentTime,
 }) => {
   const mapUploadRef = useRef<HTMLInputElement | null>(null);
   const activeCard = project.accessCards[0] || null;
@@ -42,7 +41,7 @@ export const AccessCardPanel: React.FC<AccessCardPanelProps> = ({
   const handleCreateAccessCard = () => {
     const newCard: AccessCardItem = {
       id: `access_${Date.now()}`,
-      startTime: Math.floor(currentTime),
+      startTime: Math.floor(getPlayhead()),
       duration: 7,
       sanctuaryName: {
         ja: project.title.split(' ')[0] || '聖地名',
@@ -113,7 +112,7 @@ export const AccessCardPanel: React.FC<AccessCardPanelProps> = ({
             className="px-4 py-2 bg-[#1b2f24] hover:bg-[#254233] border border-[#2e5e45] text-[#86efac] text-xs font-semibold rounded transition-colors inline-flex items-center space-x-1.5"
           >
             <Plus className="w-4 h-4" />
-            <span>現在位置（{currentTime.toFixed(1)}s）にアクセスカードを追加</span>
+            <span>現在位置（<PlayheadSeconds digits={1} />s）にアクセスカードを追加</span>
           </button>
         </div>
       ) : (
@@ -121,8 +120,9 @@ export const AccessCardPanel: React.FC<AccessCardPanelProps> = ({
           {/* Timeline Placement Timing */}
           <div className="grid grid-cols-2 gap-3 bg-[#131924] border border-[#242f40] rounded-lg p-3 text-xs">
             <div>
-              <label className="text-[#8A99AD] block mb-1">開始秒 (秒)</label>
+              <label htmlFor="access-field-1" className="text-[#8A99AD] block mb-1">開始秒 (秒)</label>
               <input
+                id="access-field-1"
                 type="number"
                 step="0.5"
                 value={activeCard.startTime}
@@ -133,8 +133,9 @@ export const AccessCardPanel: React.FC<AccessCardPanelProps> = ({
               />
             </div>
             <div>
-              <label className="text-[#8A99AD] block mb-1">表示尺 (秒)</label>
+              <label htmlFor="access-field-2" className="text-[#8A99AD] block mb-1">表示尺 (秒)</label>
               <input
+                id="access-field-2"
                 type="number"
                 step="0.5"
                 value={activeCard.duration}
@@ -162,7 +163,7 @@ export const AccessCardPanel: React.FC<AccessCardPanelProps> = ({
                   <Compass className="w-3.5 h-3.5" />
                   <span>簡易地図</span>
                 </div>
-                <div className="text-[10px] mt-0.5 opacity-80">ピンと座標のみ（道路は表示されません）</div>
+                <div className="text-[11px] mt-0.5 opacity-80">ピンと座標のみ（道路は表示されません）</div>
               </button>
 
               <button
@@ -180,9 +181,10 @@ export const AccessCardPanel: React.FC<AccessCardPanelProps> = ({
                   <ImageIcon className="w-3.5 h-3.5" />
                   <span>地図画像（推奨）</span>
                 </div>
-                <div className="text-[10px] mt-0.5 opacity-80">正確な地図・案内図をアップロード</div>
+                <div className="text-[11px] mt-0.5 opacity-80">正確な地図・案内図をアップロード</div>
               </button>
               <input
+                aria-label="地図画像ファイル"
                 ref={mapUploadRef}
                 type="file"
                 accept="image/*"
@@ -194,8 +196,9 @@ export const AccessCardPanel: React.FC<AccessCardPanelProps> = ({
             {/* Coordinates: the simple map's pin, and the place to open in OpenStreetMap */}
             <div className="grid grid-cols-2 gap-2 pt-2 border-t border-[#202938] text-xs">
               <div>
-                <label className="text-[#8A99AD] block mb-1">緯度 (Latitude)</label>
+                <label htmlFor="access-field-3" className="text-[#8A99AD] block mb-1">緯度 (Latitude)</label>
                 <input
+                  id="access-field-3"
                   type="number"
                   step="0.0001"
                   value={activeCard.latLng.lat}
@@ -208,8 +211,9 @@ export const AccessCardPanel: React.FC<AccessCardPanelProps> = ({
                 />
               </div>
               <div>
-                <label className="text-[#8A99AD] block mb-1">経度 (Longitude)</label>
+                <label htmlFor="access-field-4" className="text-[#8A99AD] block mb-1">経度 (Longitude)</label>
                 <input
+                  id="access-field-4"
                   type="number"
                   step="0.0001"
                   value={activeCard.latLng.lng}
@@ -231,13 +235,14 @@ export const AccessCardPanel: React.FC<AccessCardPanelProps> = ({
                   </span>
                   <button
                     onClick={() => mapUploadRef.current?.click()}
-                    className="px-2 py-0.5 bg-[#1b2533] hover:bg-[#25354a] border border-[#354862] text-[#93c5fd] rounded text-[10px] transition-colors"
+                    className="px-2 py-0.5 bg-[#1b2533] hover:bg-[#25354a] border border-[#354862] text-[#93c5fd] rounded text-[11px] transition-colors"
                   >
                     {activeCard.customMapDataUrl ? '画像を差し替え' : '画像を選択'}
                   </button>
                 </div>
-                <label className="text-[#8A99AD] block">出典表記（地図の右下に表示されます）</label>
+                <label htmlFor="access-field-5" className="text-[#8A99AD] block">出典表記（地図の右下に表示されます）</label>
                 <input
+                  id="access-field-5"
                   type="text"
                   value={activeCard.attribution}
                   placeholder="© OpenStreetMap contributors"
@@ -247,7 +252,7 @@ export const AccessCardPanel: React.FC<AccessCardPanelProps> = ({
               </div>
             )}
 
-            <div className="text-[10px] text-gray-400 bg-[#0f141d] border border-[#1e2634] rounded p-2 leading-relaxed">
+            <div className="text-[11px] text-gray-400 bg-[#0f141d] border border-[#1e2634] rounded p-2 leading-relaxed">
               <div className="flex items-center space-x-1 text-gray-300 mb-0.5">
                 <Check className="w-3 h-3 text-[#22c55e]" />
                 <span>正確な地図を使う手順</span>
@@ -277,11 +282,12 @@ export const AccessCardPanel: React.FC<AccessCardPanelProps> = ({
 
             {/* Address */}
             <div>
-              <label className="text-[#CBD5E1] block mb-1 flex items-center space-x-1">
+              <label htmlFor="access-field-6" className="text-[#CBD5E1] block mb-1 flex items-center space-x-1">
                 <MapPin className="w-3.5 h-3.5 text-[#EAB308]" />
                 <span>所在地 (住所)</span>
               </label>
               <input
+                id="access-field-6"
                 type="text"
                 value={activeCard.address[previewLang] || activeCard.address.ja}
                 onChange={(e) =>
@@ -295,11 +301,12 @@ export const AccessCardPanel: React.FC<AccessCardPanelProps> = ({
 
             {/* Nearest Transit */}
             <div>
-              <label className="text-[#CBD5E1] block mb-1 flex items-center space-x-1">
+              <label htmlFor="access-field-7" className="text-[#CBD5E1] block mb-1 flex items-center space-x-1">
                 <Train className="w-3.5 h-3.5 text-[#38BDF8]" />
                 <span>最寄り駅 / IC</span>
               </label>
               <input
+                id="access-field-7"
                 type="text"
                 value={activeCard.nearestStation[previewLang] || activeCard.nearestStation.ja}
                 onChange={(e) =>
@@ -313,11 +320,12 @@ export const AccessCardPanel: React.FC<AccessCardPanelProps> = ({
 
             {/* Parking */}
             <div>
-              <label className="text-[#CBD5E1] block mb-1 flex items-center space-x-1">
+              <label htmlFor="access-field-8" className="text-[#CBD5E1] block mb-1 flex items-center space-x-1">
                 <Car className="w-3.5 h-3.5 text-[#34D399]" />
                 <span>駐車場の有無</span>
               </label>
               <input
+                id="access-field-8"
                 type="text"
                 value={activeCard.parking[previewLang] || activeCard.parking.ja}
                 onChange={(e) =>
@@ -331,11 +339,12 @@ export const AccessCardPanel: React.FC<AccessCardPanelProps> = ({
 
             {/* Visiting Hours */}
             <div>
-              <label className="text-[#CBD5E1] block mb-1 flex items-center space-x-1">
+              <label htmlFor="access-field-9" className="text-[#CBD5E1] block mb-1 flex items-center space-x-1">
                 <Clock className="w-3.5 h-3.5 text-[#F43F5E]" />
                 <span>参拝可能時間 / 授与所時間</span>
               </label>
               <input
+                id="access-field-9"
                 type="text"
                 value={activeCard.visitingHours[previewLang] || activeCard.visitingHours.ja}
                 onChange={(e) =>

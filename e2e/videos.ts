@@ -11,6 +11,8 @@ export interface TestVideo {
   color: string;
   /** Seconds where a voice-like sound plays (otherwise only faint noise) */
   speech?: [number, number];
+  /** A steady tone of this many Hz through the whole video */
+  tone?: number;
   /** Kept as the creation time in the movie header, like Android phones do */
   recordedAt: string;
   /** ISO 6709 in the ©xyz tag, like Android phones do */
@@ -53,6 +55,7 @@ export async function makeVideos(browser: Browser, videos: TestVideo[]): Promise
           for (let i = 0; i < samples.length; i++) {
             const t = i / rate;
             let x = (Math.random() * 2 - 1) * 0.002;
+            if (v.tone) x += 0.2 * Math.sin(2 * Math.PI * v.tone * t);
             if (v.speech && t >= v.speech[0] && t < v.speech[1]) {
               const syllable = 0.55 + 0.45 * Math.sin(2 * Math.PI * 3 * t);
               for (let k = 1; k <= 8; k++) x += (0.25 / k) * syllable * Math.sin(2 * Math.PI * 140 * k * t);
