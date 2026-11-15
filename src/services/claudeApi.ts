@@ -9,11 +9,14 @@ import { GlossaryItem, LocalizedText } from '../types';
 export const CLAUDE_MODELS = [
   { id: 'claude-opus-5-5', label: 'Claude Opus 5.5（高品質・標準）' },
   { id: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5（品質と価格のバランス）' },
-  { id: 'claude-haiku-4-5', label: 'Claude Haiku 4.5（低コスト・高速）' },
+  { id: 'claude-haiku-5-5', label: 'Claude Haiku 5.5（低コスト・高速）' },
 ] as const;
 
 export type ClaudeModelId = (typeof CLAUDE_MODELS)[number]['id'];
 export const DEFAULT_CLAUDE_MODEL: ClaudeModelId = 'claude-opus-5-5';
+
+/** Models this app offered before, and the one a choice saved in the browser now means */
+const REPLACED_MODELS = new Map<string, ClaudeModelId>([['claude-haiku-4-5', 'claude-haiku-5-5']]);
 
 // The API key and model are browser settings, not project data,
 // so they never end up in exported project files.
@@ -27,8 +30,10 @@ export function loadClaudeSettings(): { apiKey: string; model: ClaudeModelId } {
     apiKey = localStorage.getItem(API_KEY_STORAGE_KEY) || '';
     model = localStorage.getItem(MODEL_STORAGE_KEY);
   } catch {}
-  const isKnownModel = CLAUDE_MODELS.some((m) => m.id === model);
-  return { apiKey, model: isKnownModel ? (model as ClaudeModelId) : DEFAULT_CLAUDE_MODEL };
+  // Someone who chose the cheap model keeps a cheap model, rather than falling back to the default
+  const current = (model !== null && REPLACED_MODELS.get(model)) || model;
+  const known = CLAUDE_MODELS.find((m) => m.id === current);
+  return { apiKey, model: known ? known.id : DEFAULT_CLAUDE_MODEL };
 }
 
 export function saveClaudeApiKey(apiKey: string): void {
@@ -72,16 +77,19 @@ function requireApiKey(apiKey: string) {
   }
 }
 
-// Haiku 4.5 rejects `effort` and has no server-side fallback; the 5.5 models accept both
-const requestExtras = (model: ClaudeModelId, effort: 'low' | 'medium') =>
-  model === 'claude-haiku-4-5'
+/**
+ * If a safety classifier declines a request, the API retries it on Anthropic's recommended
+ * fallback model. Haiku 5.5 has no server-side fallback (a declined request stays declined, so
+ * the option is left out); the declined answer is reported to the person instead.
+ */
+const fallbackOptions = (model: ClaudeModelId) =>
+  model === 'claude-haiku-5-5'
     ? {}
-    : {
-        // If a safety classifier declines, the API retries on Anthropic's recommended fallback model
-        betas: ['server-side-fallback-2026-07-01'],
-        fallbacks: 'default' as const,
-        effort,
-      };
+    : { betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' as const };
+
+/** Added to a declined answer's message when another model might have taken the request */
+const refusalHint = (model: ClaudeModelId) =>
+  model === 'claude-haiku-5-5' ? '続けて断られる場合は、翻訳モデルを Opus 5.5 か Sonnet 5.5 に変えてお試しください。' : '';
 
 export async function translateWithClaude(
   textToTranslate: string,
@@ -95,7 +103,6 @@ export async function translateWithClaude(
   requireApiKey(apiKey);
 
   const client = new Anthropic({ apiKey: apiKey.trim(), dangerouslyAllowBrowser: true });
-  const { effort, ...fallback } = requestExtras(model, 'low'); // short subtitle lines need little reasoning
 
   const response = await client.beta.messages
     .parse({
@@ -108,15 +115,16 @@ export async function translateWithClaude(
           content: `Please translate this sanctuary text into English:\n"${textToTranslate}"`,
         },
       ],
-      output_config: effort ? { format: TRANSLATION_FORMAT, effort } : { format: TRANSLATION_FORMAT },
-      ...fallback,
+      // A short subtitle line needs little reasoning
+      output_config: { format: TRANSLATION_FORMAT, effort: 'low' },
+      ...fallbackOptions(model),
     })
     .catch((error: unknown) => {
       throw new Error(describeApiError(error));
     });
 
   if (response.stop_reason === 'refusal') {
-    throw new Error('Claudeがこの文章の翻訳を辞退しました。表現を変えて再度お試しください。');
+    throw new Error(`Claudeがこの文章の翻訳を辞退しました。表現を変えて再度お試しください。${refusalHint(model)}`);
   }
   if (response.stop_reason === 'max_tokens') {
     throw new Error('翻訳結果が途中で切れました。文章を短く分けて再度お試しください。');
@@ -166,7 +174,6 @@ export async function translateLinesWithClaude(
 ): Promise<Map<string, string>> {
   requireApiKey(apiKey);
   const client = new Anthropic({ apiKey: apiKey.trim(), dangerouslyAllowBrowser: true });
-  const { effort, ...fallback } = requestExtras(model, 'low');
   const results = new Map<string, string>();
 
   for (let i = 0; i < lines.length; i += LINES_PER_REQUEST) {
@@ -184,15 +191,15 @@ export async function translateLinesWithClaude(
 ${JSON.stringify(chunk.map((l) => ({ id: l.id, ja: l.ja })), null, 1)}`,
           },
         ],
-        output_config: effort ? { format: BATCH_TRANSLATION_FORMAT, effort } : { format: BATCH_TRANSLATION_FORMAT },
-        ...fallback,
+        output_config: { format: BATCH_TRANSLATION_FORMAT, effort: 'low' },
+        ...fallbackOptions(model),
       })
       .catch((error: unknown) => {
         throw new Error(describeApiError(error));
       });
 
     if (response.stop_reason === 'refusal') {
-      throw new Error('Claudeがテロップの翻訳を辞退しました。表現を変えて再度お試しください。');
+      throw new Error(`Claudeがテロップの翻訳を辞退しました。表現を変えて再度お試しください。${refusalHint(model)}`);
     }
     const ids = new Set(chunk.map((l) => l.id));
     for (const t of response.parsed_output?.translations ?? []) {
@@ -359,7 +366,6 @@ Write the on-screen text for these ${params.clips.length} clips. Return exactly 
   });
 
   const client = new Anthropic({ apiKey: apiKey.trim(), dangerouslyAllowBrowser: true });
-  const isHaiku = model === 'claude-haiku-4-5';
 
   const response = await client.beta.messages
     .parse(
@@ -368,8 +374,8 @@ Write the on-screen text for these ${params.clips.length} clips. Return exactly 
         max_tokens: 16000,
         system: EDIT_SCRIPT_SYSTEM_PROMPT,
         messages: [{ role: 'user', content }],
-        output_config: isHaiku ? { format: EDIT_SCRIPT_FORMAT } : { format: EDIT_SCRIPT_FORMAT, effort: 'medium' as const },
-        ...(isHaiku ? {} : { betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' as const }),
+        output_config: { format: EDIT_SCRIPT_FORMAT, effort: 'medium' },
+        ...fallbackOptions(model),
       },
       { signal }
     )
@@ -378,7 +384,7 @@ Write the on-screen text for these ${params.clips.length} clips. Return exactly 
     });
 
   if (response.stop_reason === 'refusal') {
-    throw new Error('Claudeがテロップの作成を辞退しました。メモの内容を見直して再度お試しください。');
+    throw new Error(`Claudeがテロップの作成を辞退しました。メモの内容を見直して再度お試しください。${refusalHint(model)}`);
   }
   if (response.stop_reason === 'max_tokens') {
     throw new Error('テロップの作成結果が途中で切れました。動画の本数を減らして再度お試しください。');
